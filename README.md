@@ -49,6 +49,25 @@
 
 > **[2026.10.28]** [v1.7.0](https://github.com/HKUDS/DeepTutor/releases/tag/v1.7.0) — Modular installation, a refreshed learning workspace, block notebooks with Dito, narrated video lessons, resumable embedding checkpoints, and more reliable tutoring.
 
+### 🖥️ 便携桌面构建
+
+本开发分支将桌面产品迁移为 **Tauri 2 + Rust Axum 独立客户端**。Rust
+直接实现回合引擎、HTTP/WebSocket、认证、文件、插件、更新与全部产品
+服务；Node.js 只在构建期生成 Vite 静态资源，桌面端不再依赖或启动
+Python、Node.js、Next.js、Remotion 或 `node_modules`。
+
+运行数据、SQLite、模型与 WebView2 缓存、临时文件、日志和更新下载均
+位于安装目录，不回退到 C 盘用户目录。
+
+```powershell
+npm --prefix web run build:desktop
+.\scripts\build_portable.ps1
+```
+
+便携目录位于 `artifacts/portable/DeepTutor`，ZIP 与 SHA-256 校验文件位于
+`artifacts/`。便携数据布局、无宿主能力 WASM 插件 ABI、Exec 安全边界、
+构建与发行审计见 [Tauri 纯 Rust 便携桌面版](docs-for-dev/DESKTOP_TAURI.md)。
+
 <details>
 <summary><b>Past releases (more than 1 week ago)</b></summary>
 

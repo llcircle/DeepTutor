@@ -95,6 +95,13 @@ web/tsconfig.deeptutor-*.json
 # Temporary Next.js dist roots created by isolated build/test runs
 web/tmp/
 out/
+
+# Tauri desktop build outputs and generated portable runtimes
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/resources/web/
+src-tauri/resources/runtime/
+.tauri-build-cache/
 .vercel/
 .turbo/
 
@@ -121,6 +128,7 @@ out/
 # Output directories
 output/
 outputs/
+/artifacts/
 
 # Cache directories
 cache/

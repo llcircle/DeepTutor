@@ -40,6 +40,7 @@ const POLL_INTERVAL_MS = 800;
 const POLL_TIMEOUT_MS = 120_000;
 
 const INSTALLATION_LABELS: Record<InstallMode, string> = {
+  portable: "Portable Rust desktop",
   pypi: "PyPI package",
   source: "Source checkout",
   docker: "Docker container",

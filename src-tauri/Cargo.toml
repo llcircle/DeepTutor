@@ -1,0 +1,88 @@
+[package]
+name = "deeptutor-desktop"
+version = "1.7.0"
+description = "DeepTutor portable desktop application"
+authors = ["DeepTutor Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/llcircle/DeepTutor"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "deeptutor_desktop_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "deeptutor-desktop"
+path = "src/main.rs"
+test = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+async-stream = "0.3"
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws", "multipart"] }
+base64 = "0.22"
+calamine = "0.35"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+csv = "1"
+encoding_rs = "0.8"
+edge-tts-rust = "0.1.7"
+futures-util = "0.3"
+hex = "0.4"
+http = "1"
+http-body-util = "0.1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+mime_guess = "2"
+parking_lot = "0.12"
+pdf-extract = "0.12"
+pdf-render = "1.2.0"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "multipart"] }
+rand = "0.8"
+rrule = "0.14"
+rusqlite = { version = "0.37", features = ["bundled", "chrono", "serde_json"] }
+rust_xlsxwriter = "0.79"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+symphonia = { version = "0.6.1", features = ["aac", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "cors", "fs", "set-header", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+wasmi = { version = "0.46", default-features = false, features = ["std"] }
+zip = { version = "7.3", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+tempfile = "3"
+wat = "1.228"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

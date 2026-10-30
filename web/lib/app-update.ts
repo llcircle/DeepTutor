@@ -1,6 +1,6 @@
 import { apiFetch, apiUrl } from "@/lib/api";
 
-export type InstallMode = "pypi" | "source" | "docker" | "unknown";
+export type InstallMode = "portable" | "pypi" | "source" | "docker" | "unknown";
 export type UpdateJobStatus =
   | "pending"
   | "handoff"

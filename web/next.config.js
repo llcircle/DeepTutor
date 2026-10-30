@@ -91,6 +91,19 @@ const APP_VERSION = (() => {
 })();
 
 const nextConfig = {
+  // Tauri 便携版在构建阶段输出纯静态资源，运行期由 Rust 同源托管，
+  // 不随安装包分发 Node.js 或 Next.js 服务端。
+  output:
+    process.env.DEEPTUTOR_STATIC_EXPORT === "1" ? "export" : "standalone",
+
+  // 静态导出没有 Next.js 图片优化服务器，统一交给 WebView 直接加载原图。
+  images: {
+    unoptimized: process.env.DEEPTUTOR_STATIC_EXPORT === "1",
+  },
+
+  // 目录式静态文件可由 Rust 的 SPA 回退直接解析，避免依赖扩展名重写。
+  trailingSlash: process.env.DEEPTUTOR_STATIC_EXPORT === "1",
+
   // Keep the production build used by `deeptutor start` separate from the
   // `.next` development cache used by the explicit `deeptutor start --dev`.
   // Without separate directories either command can invalidate the other
@@ -110,10 +123,6 @@ const nextConfig = {
     NEXT_PUBLIC_API_BASE,
     NEXT_PUBLIC_AUTH_ENABLED,
   },
-
-  // Standalone output: self-contained server.js + minimal node_modules
-  // This eliminates the need to copy the full node_modules into Docker production images
-  output: "standalone",
 
   // Keep the standalone bundle rooted at this frontend directory. Without an
   // explicit root, Next.js can mirror the absolute checkout path inside
@@ -142,6 +151,10 @@ const nextConfig = {
 
   // Compatibility lives here; every rendered link uses learning-routes.ts.
   async redirects() {
+    if (process.env.DEEPTUTOR_STATIC_EXPORT === "1") {
+      // 静态导出的兼容跳转由 Rust 路由和客户端入口处理。
+      return [];
+    }
     return [
       // The workspace root has one destination; sessions live under /chat.
       // Kept out of a page component on purpose: a page that only calls

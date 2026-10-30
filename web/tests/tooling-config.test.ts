@@ -62,10 +62,10 @@ test("TypeScript includes canonical source roots and no named build output", () 
   assert.ok(include.includes(".next/types/**/*.ts"));
 });
 
-test("Next's checked-in environment declaration uses the canonical dev cache", () => {
+test("Next's checked-in environment declaration uses canonical generated route types", () => {
   const nextEnv = readFileSync(path.resolve(webRoot, "next-env.d.ts"), "utf8");
 
-  assert.match(nextEnv, /import "\.\/\.next\/dev\/types\/routes\.d\.ts";/);
+  assert.match(nextEnv, /import "\.\/\.next\/types\/routes\.d\.ts";/);
   assert.doesNotMatch(nextEnv, /\.next-[^/]+\//);
 });
 

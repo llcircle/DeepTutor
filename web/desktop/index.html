@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN" data-scroll-behavior="smooth">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
+    <meta
+      name="description"
+      content="DeepTutor 智能学习伴侣，由 Tauri 与 Rust 原生驱动。"
+    />
+    <meta name="theme-color" content="#fdfcf9" />
+    <title>DeepTutor</title>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("deeptutor-theme");
+          document.documentElement.classList.remove(
+            "dark",
+            "theme-glass",
+            "theme-snow",
+          );
+          if (stored === "dark") {
+            document.documentElement.classList.add("dark");
+          } else if (stored === "glass") {
+            document.documentElement.classList.add("dark", "theme-glass");
+          } else if (stored === "snow") {
+            document.documentElement.classList.add("theme-snow");
+          } else if (window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            document.documentElement.classList.add("dark");
+          } else {
+            document.documentElement.classList.add("theme-snow");
+          }
+          var layout = localStorage.getItem("deeptutor-ui-layout.v1");
+          document.documentElement.setAttribute(
+            "data-ui-layout",
+            layout === "classic" || layout === "modern" ? layout : "modern",
+          );
+        } catch (_) {
+          document.documentElement.classList.add("theme-snow");
+        }
+      })();
+    </script>
+    <style>
+      :root {
+        --font-sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI",
+          "Microsoft YaHei", sans-serif;
+        --font-serif: "Iowan Old Style", "Palatino Linotype", "Songti SC",
+          "SimSun", serif;
+      }
+      html,
+      body,
+      #root {
+        min-height: 100%;
+      }
+      body {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body
+    class="font-sans bg-[var(--background)] text-[var(--foreground)]"
+    suppressHydrationWarning
+  >
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

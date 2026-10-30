@@ -183,9 +183,12 @@ packageStandaloneAssets(process.argv[1], process.argv[2]);`,
   }
 });
 
-test("the standalone bundle is rooted where the Python launcher expects it", () => {
+test("Next config preserves standalone compatibility and desktop static export", () => {
   const source = read("next.config.js");
-  assert.match(source, /output:\s*"standalone"/);
+  assert.match(
+    source,
+    /output:\s*process\.env\.DEEPTUTOR_STATIC_EXPORT === "1" \? "export" : "standalone"/,
+  );
   assert.match(source, /outputFileTracingRoot:\s*__dirname/);
   assert.match(source, /tsconfigPath:\s*process\.env\.DEEPTUTOR_NEXT_TSCONFIG/);
 });
