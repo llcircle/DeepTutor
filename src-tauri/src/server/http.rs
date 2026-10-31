@@ -123,17 +123,18 @@ pub fn router() -> Router<AppState> {
             put(put_sidebar_description),
         )
         .route("/settings/sidebar/nav-order", put(put_sidebar_order))
+        .route("/settings/page-customization", get(get_page_customizations))
         .route(
             "/settings/page-customization/{section}",
             get(get_page_customization),
         )
         .route(
             "/settings/page-customization/chat",
-            put(put_page_customization_chat),
+            get(get_page_customization).put(put_page_customization_chat),
         )
         .route(
             "/settings/page-customization/learning",
-            put(put_page_customization_learning),
+            get(get_page_customization).put(put_page_customization_learning),
         )
         .route("/settings/readiness", get(settings_readiness))
         .route("/settings/usage", get(settings_usage))
@@ -692,6 +693,14 @@ async fn put_sidebar_order(
     Ok(Json(state.database.merge_setting("sidebar", &body)?))
 }
 
+async fn get_page_customizations(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
+    let all = state
+        .database
+        .get_setting("page_customization")?
+        .unwrap_or_else(|| json!({}));
+    Ok(Json(page_customization_document(&all)))
+}
+
 async fn get_page_customization(
     ScopedState(state): ScopedState,
     AxumPath(section): AxumPath<String>,
@@ -701,7 +710,10 @@ async fn get_page_customization(
         .get_setting("page_customization")?
         .unwrap_or_else(|| json!({}));
     Ok(Json(
-        all.get(&section).cloned().unwrap_or_else(|| json!({})),
+        page_customization_document(&all)
+            .get(&section)
+            .cloned()
+            .unwrap_or_else(|| json!({})),
     ))
 }
 
@@ -713,10 +725,11 @@ async fn put_page_customization_chat(
         .database
         .get_setting("page_customization")?
         .unwrap_or_else(|| json!({}));
-    Ok(Json(state.database.merge_setting(
+    let merged = state.database.merge_setting(
         "page_customization",
         &json!({"chat": merge_values(current.get("chat").cloned().unwrap_or_else(|| json!({})), body)}),
-    )?))
+    )?;
+    Ok(Json(page_customization_document(&merged)))
 }
 
 async fn put_page_customization_learning(
@@ -727,10 +740,29 @@ async fn put_page_customization_learning(
         .database
         .get_setting("page_customization")?
         .unwrap_or_else(|| json!({}));
-    Ok(Json(state.database.merge_setting(
+    let merged = state.database.merge_setting(
         "page_customization",
         &json!({"learning": merge_values(current.get("learning").cloned().unwrap_or_else(|| json!({})), body)}),
-    )?))
+    )?;
+    Ok(Json(page_customization_document(&merged)))
+}
+
+fn page_customization_document(all: &Value) -> Value {
+    let defaults = json!({
+        "chat": {
+            "hidden_modes": [],
+            "controls": {
+                "skills": true,
+                "mcp": true,
+                "partners": true,
+                "preferences": true,
+                "voice": true
+            },
+            "starters": {}
+        },
+        "learning": {"hidden_features": []}
+    });
+    merge_values(defaults, all.clone())
 }
 
 async fn settings_readiness(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
@@ -2435,6 +2467,36 @@ mod tests {
     #[test]
     fn api_router_constructs_without_overlapping_routes() {
         let _router: Router<AppState> = router();
+    }
+
+    #[tokio::test]
+    async fn page_customization_returns_complete_documents() {
+        let (state, _temporary) = test_state();
+        state
+            .database
+            .set_setting(
+                "page_customization",
+                &json!({"chat": {"hidden_modes": ["deep_research"]}}),
+            )
+            .expect("写入页面个性化测试配置");
+
+        let all = get_page_customizations(ScopedState(state.clone()))
+            .await
+            .expect("读取页面个性化配置")
+            .0;
+        assert_eq!(all["chat"]["hidden_modes"][0], "deep_research");
+        assert_eq!(all["chat"]["controls"]["voice"], true);
+        assert_eq!(all["learning"]["hidden_features"], json!([]));
+
+        let saved = put_page_customization_learning(
+            ScopedState(state),
+            Json(json!({"hidden_features": ["books"]})),
+        )
+        .await
+        .expect("保存学习页面个性化配置")
+        .0;
+        assert_eq!(saved["chat"]["hidden_modes"][0], "deep_research");
+        assert_eq!(saved["learning"]["hidden_features"][0], "books");
     }
 
     #[tokio::test]

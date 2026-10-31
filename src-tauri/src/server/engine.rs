@@ -2710,10 +2710,12 @@ pub(super) fn resolve_llm_settings(
     state: &AppState,
     request: &Value,
 ) -> Result<LlmSettings, String> {
-    let catalog = state
-        .database
-        .get_setting("catalog")?
-        .unwrap_or_else(|| json!({}));
+    let catalog = super::catalog::resolve_catalog_connections(
+        &state
+            .database
+            .get_setting("catalog")?
+            .unwrap_or_else(|| json!({})),
+    );
     let service = catalog
         .pointer("/services/llm")
         .ok_or_else(|| "尚未配置语言模型。请先打开设置 → 语言模型添加服务。".to_string())?;
@@ -3085,6 +3087,45 @@ mod tests {
                 }),
             )
             .expect("写入测试模型配置");
+    }
+
+    #[test]
+    fn linked_connection_address_overrides_stale_chat_address() {
+        let (state, _temporary) = test_state();
+        state
+            .database
+            .set_setting(
+                "catalog",
+                &json!({
+                    "connections": [{
+                        "id": "conn-tju",
+                        "api_key": "linked-key",
+                        "base_url": "https://gateway.example/v1"
+                    }],
+                    "services": {
+                        "llm": {
+                            "active_profile_id": "profile-test",
+                            "active_model_id": "model-test",
+                            "profiles": [{
+                                "id": "profile-test",
+                                "connection_id": "conn-tju",
+                                "binding": "openai",
+                                "base_url": "https://api.openai.com/v1",
+                                "api_format": "openai_chat",
+                                "models": [{
+                                    "id": "model-test",
+                                    "model": "deepseek-v4.1-flash"
+                                }]
+                            }]
+                        }
+                    }
+                }),
+            )
+            .expect("写入连接测试配置");
+
+        let settings = resolve_llm_settings(&state, &json!({})).expect("解析聊天模型设置");
+        assert_eq!(settings.base_url, "https://gateway.example/v1");
+        assert_eq!(settings.api_key, "linked-key");
     }
 
     async fn start_mock_openai() -> (String, tokio::task::JoinHandle<()>) {

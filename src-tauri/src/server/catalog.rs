@@ -187,12 +187,16 @@ pub fn service_selection(
     let requested_profile = profile_id
         .map(str::to_owned)
         .or_else(|| string(service.get("active_profile_id")));
-    let profile = service
+    let mut profile = service
         .get("profiles")?
         .as_array()?
         .iter()
         .find(|profile| profile.get("id").and_then(Value::as_str) == requested_profile.as_deref())?
         .clone();
+    let mut connections = indexed_objects(catalog.get("connections"));
+    if let Some(profile) = profile.as_object_mut() {
+        apply_connection(profile, service_name, &mut connections);
+    }
     if service_name == "search" {
         return Some((profile, None));
     }
@@ -476,5 +480,36 @@ mod tests {
         assert_eq!(profile["api_key"], "key");
         assert_eq!(profile["binding"], "openai");
         assert_eq!(profile["base_url"], "https://api.example.com/v1");
+    }
+
+    #[test]
+    fn service_selection_prefers_linked_connection_over_stale_profile() {
+        let catalog = json!({
+            "connections": [{
+                "id": "conn-tju",
+                "api_key": "linked-key",
+                "base_url": "https://gateway.example/v1"
+            }],
+            "services": {
+                "llm": {
+                    "active_profile_id": "p1",
+                    "active_model_id": "m1",
+                    "profiles": [{
+                        "id": "p1",
+                        "connection_id": "conn-tju",
+                        "binding": "openai",
+                        "base_url": "https://api.openai.com/v1",
+                        "api_key": "stale-key",
+                        "models": [{"id": "m1", "model": "deepseek-v4.1-flash"}]
+                    }]
+                }
+            }
+        });
+
+        let (profile, model) =
+            service_selection(&catalog, "llm", None, None).expect("读取语言模型配置");
+        assert_eq!(profile["base_url"], "https://gateway.example/v1");
+        assert_eq!(profile["api_key"], "linked-key");
+        assert_eq!(model.expect("模型")["model"], "deepseek-v4.1-flash");
     }
 }

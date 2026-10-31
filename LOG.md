@@ -72,3 +72,15 @@
 - 验证结果：cargo fmt/check/test 通过（125 项）；前端 Node 测试通过（1314 项）；OpenAPI 审计无缺失契约操作；ZIP 890 个文件、SHA-256、PE X64 与 30 项导入依赖通过；EXE 启动、Rust API、25 个模块和安装目录数据写入通过。
 - GUI 验证：设置页正常显示，语言模型页面恢复 tju/deepseek-v4.1-flash；点击应用后显示“已应用”，无 400 Bad Request；API 确认正式配置包含 1 个连接、1 个语言模型、1 个嵌入模型，草稿为空。
 - 代码状态：可用。
+
+## 2026-10-31 21:44:41 - 修复模型连接地址解析并完善页面个性化接口
+- 分支：codex/tauri-rust-port。
+- 根因：模型配置通过 connection_id 关联提供方时，模型配置保留了旧 base_url；服务诊断和聊天路径未先解析关联连接，导致空地址或旧地址回退到 https://api.openai.com/v1。
+- 修复：catalog::service_selection、engine::resolve_llm_settings 和 provider_probe::execute 统一解析连接覆盖后的有效地址、密钥、协议与附加请求头。
+- 连带修复：补齐 GET /api/settings/page-customization 聚合接口和静态分段 GET，保存接口统一返回包含默认值的完整配置文档，避免聊天页显示“未能加载页面设置”。
+- 回归测试：cargo fmt、cargo check --locked、cargo test --locked 全部通过，129 个测试通过、0 个失败。
+- 本地集成验证：模型配置故意保留 api.openai.com 旧地址，连接配置指向本地模拟服务；实际请求命中 /v1/chat/completions，诊断事件中的请求目标为连接地址，测试成功。
+- UI 验证：学习、资料、常规设置、语言模型和提供方页面均正常；模型绑定 tju，提供方地址为用户配置的自定义地址，API Key 仅以掩码显示。
+- 发行验证：便携 EXE 启动冒烟、25 个模块接口、安装目录数据、PE 架构、30 项 DLL 导入依赖、890 个 ZIP 文件一致性及发行载荷禁入项全部通过。
+- 最终包：artifacts/DeepTutor-1.7.0-portable-X64.zip，SHA-256=66055BC1D6BAA3347C95462DFB272FB843BF10E3A7872C605665BFA4611535A3。
+- 代码状态：可用于提交；未推送。

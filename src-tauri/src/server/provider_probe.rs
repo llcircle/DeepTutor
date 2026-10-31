@@ -76,6 +76,7 @@ pub async fn execute(
     run: Arc<ServiceTestRun>,
     catalog: Value,
 ) -> Arc<ServiceTestRun> {
+    let catalog = catalog::resolve_catalog_connections(&catalog);
     let service = run.service.clone();
     run.emit("info", "正在准备配置快照。", json!({}));
     emit_config(&run, &catalog, &service);
@@ -837,5 +838,36 @@ mod tests {
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(wav.len(), 32_044);
+    }
+
+    #[test]
+    fn linked_connection_address_wins_for_llm_probe() {
+        let catalog = json!({
+            "connections": [{
+                "id": "conn-tju",
+                "api_key": "linked-key",
+                "base_url": "https://gateway.example/v1"
+            }],
+            "services": {
+                "llm": {
+                    "active_profile_id": "p1",
+                    "active_model_id": "m1",
+                    "profiles": [{
+                        "id": "p1",
+                        "connection_id": "conn-tju",
+                        "binding": "openai",
+                        "base_url": "https://api.openai.com/v1",
+                        "api_key": "stale-key",
+                        "models": [{"id": "m1", "model": "deepseek-v4.1-flash"}]
+                    }]
+                }
+            }
+        });
+        let (profile, model) =
+            service_selection(&catalog, "llm", None, None).expect("读取语言模型配置");
+        let settings = llm_settings(&profile, &model.expect("模型")).expect("解析模型设置");
+
+        assert_eq!(settings.base_url, "https://gateway.example/v1");
+        assert_eq!(settings.api_key, "linked-key");
     }
 }
