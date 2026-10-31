@@ -1290,6 +1290,7 @@ dependencies = [
  "http-body-util",
  "image",
  "libc",
+ "lopdf",
  "mime_guess",
  "parking_lot",
  "pdf-extract",
@@ -1322,6 +1323,7 @@ dependencies = [
  "walkdir",
  "wasmi",
  "wat",
+ "windows",
  "windows-sys 0.61.2",
  "zip 7.4.0",
 ]

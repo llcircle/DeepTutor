@@ -2,6 +2,8 @@
 param(
     [ValidateSet("release", "debug")]
     [string]$Configuration = "release",
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
+    [string]$StageName = "DeepTutor",
     [switch]$SkipFrontend,
     [switch]$SkipZip,
     [string]$WebView2RuntimeDir = ""
@@ -16,7 +18,7 @@ $webRoot = Join-Path $projectRoot "web"
 $webOutput = Join-Path $tauriRoot "resources\web"
 $artifactRoot = Join-Path $projectRoot "artifacts\portable"
 $archiveRoot = Join-Path $projectRoot "artifacts"
-$stageRoot = Join-Path $artifactRoot "DeepTutor"
+$stageRoot = Join-Path $artifactRoot $StageName
 $packageArtifactRoot = Join-Path $archiveRoot "portable-package"
 $packageRoot = Join-Path $packageArtifactRoot "DeepTutor"
 $isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(

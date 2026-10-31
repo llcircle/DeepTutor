@@ -23,17 +23,7 @@ pub fn extract(filename: &str, bytes: &[u8]) -> Result<ExtractedDocument, String
         .unwrap_or("")
         .to_ascii_lowercase();
     let extracted = match extension.as_str() {
-        "pdf" => {
-            let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                pdf_extract::extract_text_from_mem(bytes)
-            }))
-            .map_err(|_| "PDF 解析器发生异常，文件可能已损坏或使用了不支持的编码。".to_string())?
-            .map_err(|error| format!("无法提取 PDF 文本：{error}"))?;
-            ExtractedDocument {
-                text: normalize_text(&text),
-                metadata: json!({"format": "pdf", "parser": "pdf-extract"}),
-            }
-        }
+        "pdf" => super::pdf_text::extract(bytes)?,
         "docx" => extract_docx(bytes)?,
         "pptx" => extract_pptx(bytes)?,
         "epub" => extract_epub(bytes)?,
@@ -64,7 +54,13 @@ pub fn extract(filename: &str, bytes: &[u8]) -> Result<ExtractedDocument, String
         }
     };
     if extracted.text.trim().is_empty() {
-        return Err("没有从文档中提取到可索引文本。".to_string());
+        return Err(extracted
+            .metadata
+            .get("ocr_warning")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("没有从文档中提取到可索引文本。")
+            .to_string());
     }
     Ok(extracted)
 }

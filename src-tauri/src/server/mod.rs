@@ -32,6 +32,7 @@ mod office_preview;
 mod parsing;
 mod partner_groups;
 mod partners;
+mod pdf_text;
 mod plugin_wasm;
 mod plugins;
 mod prompts;

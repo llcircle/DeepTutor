@@ -53,6 +53,10 @@ export interface MaterialInfo {
   has_raw_view: boolean;
   render_mode: RenderMode;
   extractor: string;
+  text_status?: "embedded" | "ocr" | "partial" | "unavailable";
+  ocr_warning?: string;
+  ocr_page_count?: number;
+  media_warning?: string;
   content_format?: ContentFormat;
   source_type?: string;
   source_url?: string;

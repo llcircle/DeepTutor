@@ -96,3 +96,17 @@
 - 数据保护：验收前后原用户 SQLite SHA-256 一致；未使用用户密钥调用任何远程服务，未改写原有模型配置。
 - 可用性：可编译、可测试、可运行；存在既有 unused/dead_code 编译警告。本次未验证用户远程网关的实时可用性。
 - 发行 EXE SHA-256：`230617950d47f8bf71559c2d701b38e02e90a4f63e6b40d6b4a14c49e2032d87`。
+
+## 2026-10-31 23:27:37 +08:00 PDF 阅读导入修复与 Python 实现对照
+
+- 用户要求：对照原 Python 阅读实现修复无法导入 PDF，并验收独立 Rust EXE。
+- 对照结论：Python 阅读链路使用 PyMuPDF 按物理页保存原文、原生书签和页内图片，不自动 OCR；通用知识库解析不应提前拦截原页阅读。
+- 实现：新增 Rust PDF 按页提取与 Windows 本地 OCR；保留空页、原件、书签、整页预览与图片页码映射；识别不可用仍能阅读原件，显示真实识别状态；知识库继续拒绝空正文。原生处理移到阻塞工作线程，阅读渲染并发限制为 1。
+- 新增验证脚本 scripts/verify_pdf_import.mjs、对照文档 docs-for-dev/PDF_READING_MIGRATION.md；构建脚本支持独立 StageName。
+- 可用性：cargo check、cargo fmt 检查、148 项 Rust 测试、1314 项前端逻辑测试、27 项阅读界面测试、Vite 桌面构建通过；OpenAPI 695 个操作无缺失。
+- 最终 EXE 实测：DSP2.pdf 68 页全部 OCR，13125 字符，14.39 秒；DSP9.pdf 44 页全部 OCR，9882 字符，9.30 秒。原件哈希不变；逐页定位、范围读取、图片访问、重复复用、重新处理、重启持久化、5 份 PDF 的界面渲染均通过。
+- 回归：模型自定义地址路由 10 组 EXE 检查通过；25 个模块启动检查、31 项 PE 导入依赖、890 个 ZIP 文件一致性与禁入项审计通过，无 Python/Node 运行依赖。
+- 过程修正：预览图不再放大小图；打包目录冲突改为串行重建。桌面单实例导致并发 EXE 验收启动失败，改为串行验收；界面检查区分 SPA 导航 HTML 的现有回退状态与实际 API/资源错误，另用画布像素和截图验证 PDF 正文。
+- 最终程序：artifacts/portable/DeepTutor/DeepTutor.exe（原有 data 保留）；干净发行目录 artifacts/portable-package/DeepTutor；ZIP artifacts/DeepTutor-1.7.0-portable-X64.zip。
+- EXE SHA-256：7b72f41ff4bd602de179d4c308c06c429f52c928be87047600df5658c28f4c24。
+- 验收报告：artifacts/pdf-verification/exe-1793460337217/report.json。真实文档只读分析，未发送到外部服务；用户 PDF、数据库、密钥均不进入 Git。

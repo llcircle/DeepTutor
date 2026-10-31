@@ -2467,6 +2467,10 @@ async fn ingest_bytes(
         "has_raw_view": extraction.get("render_mode").and_then(Value::as_str) == Some("pdf"),
         "render_mode": extraction.get("render_mode").cloned().unwrap_or_else(|| json!("text")),
         "extractor": extraction.get("extractor").cloned().unwrap_or_else(|| json!("native")),
+        "text_status": extraction.get("text_status").cloned().unwrap_or_else(|| json!("embedded")),
+        "ocr_warning": extraction.get("ocr_warning").cloned().unwrap_or_else(|| json!("")),
+        "ocr_page_count": extraction.get("ocr_page_count").cloned().unwrap_or_else(|| json!(0)),
+        "media_warning": extraction.get("media_warning").cloned().unwrap_or_else(|| json!("")),
         "content_format": extraction.get("content_format").cloned().unwrap_or_else(|| json!("plain_text")),
         "source_type": source_type,
         "source_url": source_url,
@@ -2498,50 +2502,23 @@ async fn extract_reading(
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    // 阅读的定位必须与 PDF 物理页一致，不能经过通用索引器的非空校验或重新分段。
+    if extension == "pdf" {
+        let extracted = super::pdf_text::extract_reading(
+            bytes.to_vec(),
+            material_directory(state, material_id)?.join("media"),
+        )
+        .await
+        .map_err(ApiError::bad_request)?;
+        return pdf_reading_data(filename, extracted);
+    }
     let extracted = super::parsing::extract(state, filename, bytes).await?;
     let parser = extracted
         .metadata
         .get("parse_engine")
         .and_then(Value::as_str)
         .unwrap_or("text_only");
-    let (units, unit, extractor, render_mode, content_format, title) = if extension == "pdf" {
-        let title = Path::new(filename)
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("PDF")
-            .to_string();
-        if parser == "text_only" || parser == "pdf-extract" {
-            let pages = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                pdf_extract::extract_text_from_mem_by_pages(bytes)
-            }))
-            .map_err(|_| ApiError::bad_request("PDF 解析器发生异常，文件可能已损坏。"))?
-            .map_err(|error| ApiError::bad_request(format!("无法提取 PDF 文本：{error}")))?;
-            let units = pages
-                .into_iter()
-                .map(|text| text.replace('\u{c}', "").trim().to_string())
-                .collect::<Vec<_>>();
-            if units.is_empty() {
-                return Err(ApiError::bad_request("PDF 中没有可读取的文本页面。"));
-            }
-            (
-                units,
-                "page".to_string(),
-                "pdf-extract".to_string(),
-                "pdf".to_string(),
-                "plain_text".to_string(),
-                title,
-            )
-        } else {
-            (
-                split_into_sections(&extracted.text),
-                "section".to_string(),
-                parser.to_string(),
-                "pdf".to_string(),
-                "markdown".to_string(),
-                title,
-            )
-        }
-    } else {
+    let (units, unit, extractor, render_mode, content_format, title) = {
         let title = Path::new(filename)
             .file_stem()
             .and_then(|value| value.to_str())
@@ -2624,6 +2601,56 @@ async fn extract_reading(
         "content_format": content_format,
         "title": title,
         "char_count": char_count
+    }))
+}
+
+fn pdf_reading_data(
+    filename: &str,
+    extracted: super::documents::ExtractedDocument,
+) -> ApiResult<Value> {
+    let metadata = extracted.metadata;
+    let mut units = metadata
+        .get("page_texts")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| ApiError::bad_request("PDF 解析结果缺少物理页。"))?;
+    if units.is_empty() {
+        return Err(ApiError::bad_request("PDF 没有可读取的页面。"));
+    }
+    let char_count = units
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|text| text.chars().count())
+        .sum::<usize>();
+    let media = metadata.get("media").cloned().unwrap_or_else(|| json!({}));
+    if let Some(mapping) = media.as_object() {
+        for (name, locator) in mapping {
+            if let Some(unit) = locator
+                .as_u64()
+                .and_then(|page| page.checked_sub(1))
+                .and_then(|index| units.get_mut(index as usize))
+            {
+                let text = unit.as_str().unwrap_or("");
+                *unit = json!(format!("{text}\n[图片 {}: {name}]", locator));
+            }
+        }
+    }
+    Ok(json!({
+        "units": units,
+        "outline": metadata.get("outline").cloned().unwrap_or_else(|| json!([])),
+        "unit_refs": [],
+        "media": media,
+        "unit": "page",
+        "extractor": metadata.get("parser").cloned().unwrap_or_else(|| json!("pdf-extract")),
+        "render_mode": "pdf",
+        "content_format": "plain_text",
+        "title": metadata.get("title").and_then(Value::as_str).filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| Path::new(filename).file_stem().and_then(|value| value.to_str()).unwrap_or("PDF")),
+        "char_count": char_count,
+        "text_status": metadata.get("text_status").cloned().unwrap_or_else(|| json!("unavailable")),
+        "ocr_warning": metadata.get("ocr_warning").cloned().unwrap_or_else(|| json!("")),
+        "ocr_page_count": metadata.get("ocr_page_count").cloned().unwrap_or_else(|| json!(0)),
+        "media_warning": metadata.get("media_warning").cloned().unwrap_or_else(|| json!(""))
     }))
 }
 
@@ -2778,6 +2805,19 @@ async fn reprocess_stored_material(state: &AppState, material_id: &str) -> Resul
         .get("extractor")
         .cloned()
         .unwrap_or_else(|| json!("native"));
+    for key in [
+        "char_count",
+        "text_status",
+        "ocr_warning",
+        "ocr_page_count",
+        "media_warning",
+    ] {
+        if let Some(value) = extraction.get(key) {
+            updated[key] = value.clone();
+        }
+    }
+    updated["render_mode"] = extraction["render_mode"].clone();
+    updated["has_raw_view"] = json!(extraction["render_mode"] == "pdf");
     updated["error_code"] = Value::String(String::new());
     updated["error_detail"] = Value::String(String::new());
     state
@@ -3044,6 +3084,9 @@ fn material_detail(state: &AppState, record: Value) -> ApiResult<Value> {
         .cloned()
         .filter(|rows| !rows.is_empty())
         .unwrap_or_else(|| {
+            if detail.get("render_mode").and_then(Value::as_str) == Some("pdf") {
+                return Vec::new();
+            }
             units
                 .iter()
                 .enumerate()
@@ -4031,6 +4074,100 @@ async fn synthesize_speech(state: &AppState, text: &str) -> ApiResult<(Vec<u8>, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pdf_state() -> (AppState, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let data = root.join("data");
+        let paths = crate::portable::PortablePaths {
+            root: root.clone(),
+            home: root.join("home"),
+            cache: root.join("cache"),
+            temp: root.join("temp"),
+            logs: root.join("logs"),
+            webview: root.join("cache/webview2"),
+            uploads: data.join("uploads"),
+            outputs: data.join("outputs"),
+            database: data.join("deeptutor.sqlite3"),
+            data,
+        };
+        paths.prepare().unwrap();
+        let database = crate::storage::Database::new(&paths.database);
+        database.initialize().unwrap();
+        (AppState::new(database, paths).unwrap(), directory)
+    }
+
+    #[tokio::test]
+    async fn 阅读导入保留原件与物理页且重新处理不编造目录() {
+        let (state, _directory) = pdf_state();
+        let bytes = super::super::pdf_text::tests::test_pdf(&["First page", "Second page"]);
+        let record = ingest_bytes(&state, "pdf-test", "hash", "测试.pdf", &bytes, "file", "")
+            .await
+            .unwrap();
+        assert_eq!(record["unit_count"], 2);
+        assert_eq!(record["unit"], "page");
+        assert_eq!(record["text_status"], "embedded");
+        let raw = material_directory(&state, "pdf-test")
+            .unwrap()
+            .join("raw/测试.pdf");
+        assert_eq!(std::fs::read(raw).unwrap(), bytes);
+        let detail = material_detail(&state, record).unwrap();
+        assert_eq!(detail["outline"], json!([]));
+        let data = load_material_data(&state, "pdf-test").unwrap();
+        assert_eq!(data["media"]["page-0002.jpg"], 2);
+        assert!(data["units"][1].as_str().unwrap().contains("Second page"));
+        reprocess_stored_material(&state, "pdf-test").await.unwrap();
+        let record = material_record(&state, "pdf-test").unwrap();
+        assert_eq!(record["unit_count"], 2);
+        assert_eq!(record["has_raw_view"], true);
+        assert_eq!(record["text_status"], "embedded");
+    }
+
+    #[test]
+    fn 没有OCR时仍允许阅读但图片标记不能冒充识别文字() {
+        let result = pdf_reading_data(
+            "扫描.pdf",
+            super::super::documents::ExtractedDocument {
+                text: String::new(),
+                metadata: json!({
+                    "page_texts": ["", ""], "media": {"page-0002.jpg": 2},
+                    "text_status": "unavailable", "ocr_warning": "本地 OCR 不可用",
+                    "outline": [], "parser": "pdf-extract",
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!(result["char_count"], 0);
+        assert_eq!(result["text_status"], "unavailable");
+        assert_eq!(result["units"].as_array().unwrap().len(), 2);
+        assert_eq!(result["units"][1], "\n[图片 2: page-0002.jpg]");
+        assert_eq!(result["render_mode"], "pdf");
+    }
+
+    #[test]
+    fn OCR结果不会再次被空文本层覆盖() {
+        let result = pdf_reading_data(
+            "OCR.pdf",
+            super::super::documents::ExtractedDocument {
+                text: "识别结果".to_string(),
+                metadata: json!({
+                    "page_texts": ["识别结果"], "media": {},
+                    "text_status": "ocr", "ocr_page_count": 1, "parser": "windows-ocr",
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!(result["units"][0], "识别结果");
+        assert_eq!(result["extractor"], "windows-ocr");
+        assert_eq!(result["ocr_page_count"], 1);
+        assert_eq!(result["char_count"], 4);
+    }
+
+    #[test]
+    fn 通用索引器仍然拒绝没有文字的PDF() {
+        let bytes = super::super::pdf_text::tests::test_pdf(&[""]);
+        assert!(super::super::documents::extract("empty.pdf", &bytes).is_err());
+    }
 
     #[test]
     fn 分段保持在目标字符附近并兼容中文() {

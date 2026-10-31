@@ -61,13 +61,13 @@ pub async fn extract(
     }
 
     let parsed = if selection.native_fallback {
-        documents::extract(filename, bytes)?
+        extract_native(filename, bytes).await?
     } else {
         match selection.engine.as_str() {
             "docling" => extract_docling(state, filename, bytes, &selection.settings).await?,
             "tika" => extract_tika(state, filename, bytes, &selection.settings).await?,
             "mineru" => extract_mineru(state, filename, bytes, &selection.settings).await?,
-            _ => documents::extract(filename, bytes)?,
+            _ => extract_native(filename, bytes).await?,
         }
     };
     let parsed = ExtractedDocument {
@@ -85,6 +85,14 @@ pub async fn extract(
         },
     )?;
     Ok(parsed)
+}
+
+async fn extract_native(filename: &str, bytes: &[u8]) -> Result<ExtractedDocument, String> {
+    let filename = filename.to_string();
+    let bytes = bytes.to_vec();
+    tokio::task::spawn_blocking(move || documents::extract(&filename, &bytes))
+        .await
+        .map_err(|error| format!("原生文档解析任务失败：{error}"))?
 }
 
 pub async fn extract_path(state: &AppState, path: &Path) -> Result<ExtractedDocument, String> {
@@ -764,6 +772,7 @@ fn parser_signature(engine: &str, settings: &Value) -> String {
     }
     let material = json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "native_pdf_version": 2,
         "engine": engine,
         "config": config
     });
