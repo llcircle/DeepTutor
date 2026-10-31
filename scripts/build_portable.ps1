@@ -103,6 +103,16 @@ else {
 }
 Copy-Item -LiteralPath $executable -Destination $portableExecutable
 
+$nativeDependencies = @()
+if ($isWindowsHost) {
+    $webview2Loader = Join-Path $targetRoot "$profileDirectory\WebView2Loader.dll"
+    if (-not (Test-Path -LiteralPath $webview2Loader -PathType Leaf)) {
+        throw "构建输出缺少 DeepTutor.exe 必需的 WebView2Loader.dll：$webview2Loader"
+    }
+    Copy-Item -LiteralPath $webview2Loader -Destination $stageRoot
+    $nativeDependencies += "WebView2Loader.dll"
+}
+
 $resourcesTarget = Join-Path $stageRoot "resources"
 New-Item -ItemType Directory -Path $resourcesTarget -Force | Out-Null
 Copy-Item -LiteralPath $webOutput -Destination $resourcesTarget -Recurse -Force
@@ -139,7 +149,7 @@ DeepTutor 纯 Rust 便携桌面版 $version
 2. 首次启动会在当前目录创建 data、cache、temp、logs 和 home。
 3. 迁移到其他目录或电脑时，复制整个 DeepTutor 文件夹即可。
 4. 程序不依赖 Python、Node.js 或 node_modules，也不会把应用数据写入 C 盘用户目录。
-5. 升级时仅替换 DeepTutor.exe 和 resources\web，保留 data、cache、temp、logs、home。
+5. 升级时替换 DeepTutor.exe、WebView2Loader.dll 和 resources\web，保留 data、cache、temp、logs、home。
 6. 如果系统没有 WebView2，可在构建时使用 -WebView2RuntimeDir 打入固定版本运行时。
 
 诊断日志：logs\desktop.log
@@ -157,6 +167,7 @@ $manifest = [ordered]@{
     python_required = $false
     node_required = $false
     webview2_fixed_runtime = [bool]$WebView2RuntimeDir
+    native_dependencies = $nativeDependencies
     data_layout = @("data", "cache", "temp", "logs", "home")
 }
 $manifest | ConvertTo-Json -Depth 4 |
@@ -171,34 +182,16 @@ $forbiddenRuntimeNames = @(
     "remotion"
 )
 $forbiddenExtensions = @(".py", ".pyc", ".pyd")
-$forbiddenPathSegments = @(
-    "runtime\python",
-    "runtime\python\",
-    "runtime/node",
-    "runtime/node/",
-    "runtime\remotion",
-    "runtime/remotion/",
-    "web\.next",
-    "web/.next",
-    "\data\",
-    "/data/",
-    "\cache\",
-    "/cache/",
-    "\temp\",
-    "/temp/",
-    "\logs\",
-    "/logs/",
-    "\home\",
-    "/home/"
+$forbiddenPathPatterns = @(
+    '(^|/)(runtime/(python|node|remotion))(^|/|$)',
+    '(^|/)web/\.next(/|$)',
+    '(^|/)(data|cache|temp|logs|home)(/|$)'
 )
 $forbidden = Get-ChildItem -LiteralPath $stageRoot -Recurse -Force | Where-Object {
     $relative = $_.FullName.Substring($stageRoot.Length).Replace('\', '/')
-    $pathMatches = @($forbiddenPathSegments | Where-Object {
-        $relative.Contains($_.Replace('\', '/'), [System.StringComparison]::OrdinalIgnoreCase)
-    })
     $_.Name -in $forbiddenRuntimeNames -or
     $_.Extension -in $forbiddenExtensions -or
-    $pathMatches.Count -gt 0
+    @($forbiddenPathPatterns | Where-Object { $relative -match $_ }).Count -gt 0
 }
 if ($forbidden) {
     $paths = ($forbidden | ForEach-Object FullName) -join [Environment]::NewLine
@@ -221,5 +214,14 @@ if (-not $SkipZip) {
     Set-Content -LiteralPath "$zipPath.sha256" -Value "$hash  $(Split-Path $zipPath -Leaf)" -Encoding ascii
     Write-Host "便携包：$zipPath"
 }
+
+$verifyScript = Join-Path $PSScriptRoot "verify_portable.ps1"
+$verifyArguments = @{
+    StageRoot = $stageRoot
+}
+if (-not $SkipZip) {
+    $verifyArguments.ZipPath = $zipPath
+}
+& $verifyScript @verifyArguments
 
 Write-Host "便携目录：$stageRoot"

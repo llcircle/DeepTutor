@@ -1,4 +1,4 @@
-#[cfg(not(test))]
+#[cfg_attr(test, allow(dead_code))]
 mod logging;
 #[cfg_attr(test, allow(dead_code))]
 mod portable;

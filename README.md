@@ -62,10 +62,13 @@ Python、Node.js、Next.js、Remotion 或 `node_modules`。
 ```powershell
 npm --prefix web run build:desktop
 .\scripts\build_portable.ps1
+.\scripts\verify_portable.ps1 -StageRoot artifacts\portable\DeepTutor -ZipPath artifacts\DeepTutor-1.7.0-portable-X64.zip -SmokeTest
 ```
 
 便携目录位于 `artifacts/portable/DeepTutor`，ZIP 与 SHA-256 校验文件位于
-`artifacts/`。便携数据布局、无宿主能力 WASM 插件 ABI、Exec 安全边界、
+`artifacts/`。构建脚本会复制 EXE 所需的 `WebView2Loader.dll`，最终验证会检查
+PE 架构、原生导入依赖、启动冒烟测试和 ZIP 一致性。便携数据布局、
+无宿主能力 WASM 插件 ABI、Exec 安全边界、
 构建与发行审计见 [Tauri 纯 Rust 便携桌面版](docs-for-dev/DESKTOP_TAURI.md)。
 
 <details>

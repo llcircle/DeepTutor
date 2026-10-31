@@ -53,6 +53,7 @@ pub fn router() -> Router<AppState> {
         .merge(super::documents_api::router())
         .merge(super::office_preview::router())
         .merge(super::memory::router())
+        .route("/modules", get(super::modules::list_modules))
         .merge(super::partner_groups::api_router())
         .merge(super::partners::api_router())
         .merge(super::plugins::router())
@@ -253,13 +254,6 @@ pub fn router() -> Router<AppState> {
             "/imports/chat-history",
             get(imports_list).post(imports_start),
         )
-        .route("/memory/overview", get(memory_overview))
-        .route(
-            "/memory/settings",
-            get(get_memory_settings).put(put_memory_settings),
-        )
-        .route("/memory/snapshot/{surface}", get(memory_snapshot))
-        .route("/memory/trace/{surface}", get(memory_trace))
         .route("/personas", get(personas_list).post(persona_create))
         .route(
             "/personas/{name}",
@@ -1927,44 +1921,6 @@ async fn calendar_task_blocks(ScopedState(state): ScopedState) -> ApiResult<Json
     ))
 }
 
-async fn memory_overview(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({
-        "layers": state.database.list_resources("memory_layer")?,
-        "entries": state.database.list_resources("memory_entry")?
-    })))
-}
-
-async fn get_memory_settings(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    get_raw_setting(&state, "memory_settings")
-}
-
-async fn put_memory_settings(
-    ScopedState(state): ScopedState,
-    Json(body): Json<Value>,
-) -> ApiResult<Json<Value>> {
-    put_raw_setting(&state, "memory_settings", body)
-}
-
-async fn memory_snapshot(
-    ScopedState(state): ScopedState,
-    AxumPath(surface): AxumPath<String>,
-) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({
-        "surface": surface,
-        "entries": state.database.list_resources(&format!("memory:{surface}"))?
-    })))
-}
-
-async fn memory_trace(
-    ScopedState(state): ScopedState,
-    AxumPath(surface): AxumPath<String>,
-) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({
-        "surface": surface,
-        "traces": state.database.list_resources(&format!("memory_trace:{surface}"))?
-    })))
-}
-
 async fn personas_list(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
     Ok(Json(Value::Array(
         state.database.list_resources("persona")?,
@@ -2345,4 +2301,14 @@ fn directory_size(path: &std::path::Path) -> u64 {
 #[allow(dead_code)]
 fn empty_object() -> Value {
     Value::Object(Map::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_router_constructs_without_overlapping_routes() {
+        let _router: Router<AppState> = router();
+    }
 }

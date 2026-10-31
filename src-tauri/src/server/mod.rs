@@ -25,6 +25,7 @@ mod mastery;
 mod mcp_cli;
 mod media_services;
 mod memory;
+mod modules;
 mod multi_user;
 mod notebook;
 mod office_preview;
@@ -403,7 +404,7 @@ pub async fn start(state: AppState, web_directory: PathBuf) -> Result<ServerRunt
 }
 
 async fn root() -> Redirect {
-    Redirect::temporary("/index.html")
+    Redirect::temporary("/chat")
 }
 
 pub fn find_web_directory(paths: &PortablePaths, resource_dir: Option<&Path>) -> Option<PathBuf> {
@@ -418,4 +419,18 @@ pub fn find_web_directory(paths: &PortablePaths, resource_dir: Option<&Path>) ->
     candidates
         .into_iter()
         .find(|candidate| candidate.join("index.html").is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{header::LOCATION, StatusCode};
+    use axum::response::IntoResponse;
+
+    #[tokio::test]
+    async fn root_redirects_to_the_desktop_workspace() {
+        let response = root().await.into_response();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.headers()[LOCATION], "/chat");
+    }
 }

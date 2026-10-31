@@ -34,3 +34,17 @@
 - 最终目录与 ZIP 各包含 927 个文件；Python/Node 运行时、`node_modules`、`.py/.pyc/.pyd`、`runtime/python`、`runtime/node`、用户 `data/cache/temp/logs/home` 禁入项均为 0，审计通过。
 - 最终 ZIP SHA-256：`F23726558DDFF1A03A052714CB8627F9CD308B9302A31C9B03E8104D850C4577`。上一条日志中的哈希对应旧前端构建产物，已由本条最终值替代。
 - 代码可用状态：纯 Rust/Tauri 便携桌面构建可用于验收；外部 MCP、CLI、文档解析器和模型服务仍需按用户环境配置后启用。
+
+## 2026-10-31 10:07:18 +08:00
+- 任务：修复 DeepTutor.exe 缺少 WebView2Loader.dll，并对独立 Tauri/Rust 便携版进行充分校验。
+- 分支：codex/tauri-rust-port；基准提交：4c965ac7d7698fa697cf786b0d0a441e08c82e5b。
+- 修复：build_portable.ps1 随包复制 WebView2Loader.dll，manifest 记录 native_dependencies，升级说明同步替换 EXE、DLL 与 resources/web。
+- 修复：删除 Rust HTTP 路由中的重复内存路由；新增 GET /api/modules 的 25 项纯 Rust 模块清单；根路由改为 /chat；修正日志过滤器。
+- 新增：scripts/verify_portable.ps1，覆盖必需文件、PE 架构、EXE/DLL 导入、禁入项、目录/ZIP 一致性、SHA-256、隔离启动、安装目录数据与 /api/modules。
+- 测试：cargo check 通过；cargo test 122/122 通过；前端 Node 1307/1307 通过；TypeScript typecheck 通过；PowerShell 语法通过。
+- 运行验收：最终 EXE 隔离启动通过；WebView/Rust 服务就绪；SQLite、WebView2 缓存、日志、temp、home 均位于安装目录；/api/modules 返回 25 个且全部 installed/enabled/ready。
+- 可视验收：初始地址为 /chat；聊天欢迎页、输入框和能力入口正常；日历、任务看板、笔记本（/co-writer）均可正常渲染，不再出现 404 或仅显示“重试”。
+- 发布物：D:\VS_Projects\DeepTutor\artifacts\DeepTutor-1.7.0-portable-X64.zip。
+- SHA-256：815702d7c0a67bcd4bba939d64a893e692b238df368b824c516430f162a470f0。
+- 路由审计：OpenAPI 695 项，Rust 711 项，缺失 0 项，额外 31 项兼容/扩展路由。
+- 代码可用：是。

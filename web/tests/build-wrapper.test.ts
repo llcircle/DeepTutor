@@ -192,3 +192,19 @@ test("Next config preserves standalone compatibility and desktop static export",
   assert.match(source, /outputFileTracingRoot:\s*__dirname/);
   assert.match(source, /tsconfigPath:\s*process\.env\.DEEPTUTOR_NEXT_TSCONFIG/);
 });
+
+test("portable packaging carries and verifies WebView2Loader.dll", () => {
+  const build = read("..", "scripts", "build_portable.ps1");
+  const verify = read("..", "scripts", "verify_portable.ps1");
+
+  assert.match(build, /WebView2Loader\.dll/);
+  assert.match(build, /native_dependencies\s*=\s*\$nativeDependencies/);
+  assert.match(
+    build,
+    /'\(\^\|\/\)\(data\|cache\|temp\|logs\|home\)\(\/\|\$\)'/,
+  );
+  assert.match(verify, /Get-PeImports/);
+  assert.match(verify, /exeImports -notcontains "WebView2Loader\.dll"/);
+  assert.match(verify, /ZIP 与便携目录文件清单不一致/);
+  assert.match(verify, /\[switch\]\$SmokeTest/);
+});

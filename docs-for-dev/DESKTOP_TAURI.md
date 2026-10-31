@@ -3,7 +3,8 @@
 [开发手册](README.md) · [架构](ARCHITECTURE.md) · [数据存储](DATA_STORAGE.md)
 
 DeepTutor 桌面版以 **Tauri 2 + Rust Axum** 构建为独立客户端。桌面运行时
-只包含 Rust 可执行文件、Vite 生成的静态前端和可选 WebView2 固定运行时，
+只包含 Rust 可执行文件、`WebView2Loader.dll`、Vite 生成的静态前端和可选
+WebView2 固定运行时，
 不依赖或启动 Python、Node.js、`node_modules`、Next.js、Remotion 或 Python
 wheel 插件。
 
@@ -49,6 +50,7 @@ Python/Node 网关转发。
 ```text
 <安装目录>/
 ├── DeepTutor.exe
+├── WebView2Loader.dll    # Tauri WebView2 启动必需的原生加载器
 ├── resources/web/          # Vite 静态资源
 ├── resources/webview2-runtime/  # 可选固定运行时
 ├── data/
@@ -281,6 +283,7 @@ npm --prefix web run build:desktop
 
 .\scripts\audit_openapi_routes.ps1
 .\scripts\build_portable.ps1
+.\scripts\verify_portable.ps1 -StageRoot artifacts\portable\DeepTutor -ZipPath artifacts\DeepTutor-1.7.0-portable-X64.zip -SmokeTest
 ```
 
 开发运行：
@@ -290,9 +293,15 @@ npm --prefix web run dev:desktop
 cargo run --manifest-path src-tauri/Cargo.toml
 ```
 
-Rust 测试目标不链接 GUI，避免 Windows 测试资源清单问题。构建脚本只把
-`DeepTutor.exe`、`resources/web`、许可证、便携说明和 manifest 放入发行
-目录；用户数据不会进入 ZIP。
+Rust 测试目标不链接 GUI，避免 Windows 测试资源清单问题。构建脚本把
+`DeepTutor.exe`、与 EXE 架构一致的 `WebView2Loader.dll`、`resources/web`、
+许可证、便携说明和 manifest 放入发行目录；用户数据不会进入 ZIP。
+
+`verify_portable.ps1` 解析 PE 头和导入表，要求 `DeepTutor.exe` 显式导入的
+`WebView2Loader.dll` 与 EXE、manifest 架构一致，并确认其余原生依赖由系统或
+发行目录提供。它还会比较目录与 ZIP 文件清单、校验 SHA-256、扫描禁入项。
+`-SmokeTest` 在隔离副本中启动 EXE，等待 Rust 服务就绪，并确认 SQLite、
+WebView2、日志、临时目录和 HOME 都创建在该副本内部。
 
 ## 发行审计
 
