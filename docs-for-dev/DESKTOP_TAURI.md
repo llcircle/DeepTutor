@@ -297,11 +297,18 @@ Rust 测试目标不链接 GUI，避免 Windows 测试资源清单问题。构�
 `DeepTutor.exe`、与 EXE 架构一致的 `WebView2Loader.dll`、`resources/web`、
 许可证、便携说明和 manifest 放入发行目录；用户数据不会进入 ZIP。
 
+每次重新编译并交付 EXE，都必须通过 `build_portable.ps1` 同步更新便携 ZIP
+及 `.sha256`；前端未改动时可以使用 `-SkipFrontend`，交付时不得使用
+`-SkipZip`。不能只替换便携目录中的 EXE 而保留旧 ZIP。
+
 `verify_portable.ps1` 解析 PE 头和导入表，要求 `DeepTutor.exe` 显式导入的
 `WebView2Loader.dll` 与 EXE、manifest 架构一致，并确认其余原生依赖由系统或
 发行目录提供。它还会比较目录与 ZIP 文件清单、校验 SHA-256、扫描禁入项。
 `-SmokeTest` 在隔离副本中启动 EXE，等待 Rust 服务就绪，并确认 SQLite、
 WebView2、日志、临时目录和 HOME 都创建在该副本内部。
+启动时会同时补齐 HOME 下的 Desktop、Documents、Downloads、Pictures、
+Music、Videos 和 Favorites，避免 Windows 文件选择框访问便携 USERPROFILE
+时弹出“位置不可用”。旧便携目录同样会自动补齐，已有用户文件保留。
 
 ## 发行审计
 

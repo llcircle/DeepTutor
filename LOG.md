@@ -110,3 +110,16 @@
 - 最终程序：artifacts/portable/DeepTutor/DeepTutor.exe（原有 data 保留）；干净发行目录 artifacts/portable-package/DeepTutor；ZIP artifacts/DeepTutor-1.7.0-portable-X64.zip。
 - EXE SHA-256：7b72f41ff4bd602de179d4c308c06c429f52c928be87047600df5658c28f4c24。
 - 验收报告：artifacts/pdf-verification/exe-1793460337217/report.json。真实文档只读分析，未发送到外部服务；用户 PDF、数据库、密钥均不进入 Git。
+
+## 2026-10-31 23:52:41 +08:00 修复文件选择框位置警告并同步更新便携包
+
+- 根因：便携 USERPROFILE 指向安装目录 home，但未创建 Desktop，Windows 原生文件选择框因此弹出“位置不可用”。
+- 修复：在初始化 WebView 前创建 Desktop、Documents、Downloads、Pictures、Music、Videos、Favorites；首次启动、旧目录升级和隔离用户目录均生效，保留已有文件。
+- 交付约定：在 AGENTS.md 和桌面开发文档中明确每次交付重新编译的 EXE，必须同时更新 ZIP 和 .sha256；统一调用 build_portable.ps1，交付不得使用 -SkipZip。
+- 自动校验：150 项 Rust 测试、1314 项前端 Node 测试通过；OpenAPI 695 项契约操作无缺失；EXE 25 个模块、7 个用户文件夹与 31 项 PE 依赖校验通过；ZIP 890 文件一致性通过。
+- 真实 EXE 验收：旧版隔离副本成功复现警告且被新增冒烟检查拒绝；从新 ZIP 解压的 EXE 连续两次打开原生文件选择框均无警告；旧目录升级自动补齐文件夹且已有文件哈希不变。
+- 回归：自定义模型地址 10 项 EXE 校验通过；文本/空页、扫描 PDF、混合文档、本地 OCR、重试与重启持久化通过；真实用户数据库哈希保持不变。
+- 构建：scripts/build_portable.ps1 -SkipFrontend，release 编译与便携打包成功，现有数据未进入发行包。
+- EXE：artifacts/portable/DeepTutor/DeepTutor.exe；SHA-256 f591851124d36cd69512dff7c0c1667df9a8f4f9f85560c619c7d0e8483e0eca。
+- ZIP：artifacts/DeepTutor-1.7.0-portable-X64.zip；SHA-256 c540d9408ec363458cc8a3b59479327a9fcc4b36505b439b49421436bbb62c9b。
+- 验收记录：artifacts/file-dialog-verification/result.json；代码与发行产物状态：可用。未推送远端。

@@ -149,3 +149,11 @@ npm --prefix web run build:desktop
 The release must contain the Rust executable and `resources/web` only, plus
 optional WebView2 fixed runtime and licenses. It must not contain Python,
 Node.js, `node_modules`, `.py/.pyc/.pyd`, Next.js, Remotion or user data.
+
+### 编译交付约定
+
+- 每次重新编译并交付 EXE，必须同步更新便携 ZIP 和对应的 `.sha256`。
+- 统一使用 `.\scripts\build_portable.ps1`；前端未改动时可加
+  `-SkipFrontend`，交付时不得使用 `-SkipZip`，也不得仅复制 Cargo 输出。
+- 完成后运行 `verify_portable.ps1`，核对 ZIP 与发行目录中的 EXE 哈希一致；
+  更新现有便携目录时必须保留用户的 data、cache、temp、logs 和 home。

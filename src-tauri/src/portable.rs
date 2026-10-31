@@ -44,6 +44,14 @@ impl PortablePaths {
     pub(crate) fn prepare(&self) -> Result<(), String> {
         for directory in [
             &self.home,
+            // Windows 文件对话框会根据 USERPROFILE 访问标准用户文件夹。
+            &self.home.join("Desktop"),
+            &self.home.join("Documents"),
+            &self.home.join("Downloads"),
+            &self.home.join("Pictures"),
+            &self.home.join("Music"),
+            &self.home.join("Videos"),
+            &self.home.join("Favorites"),
             &self.data,
             &self.cache,
             &self.temp,
@@ -221,6 +229,76 @@ fn safe_user_component(user_id: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    fn test_paths(prefix: &str) -> PortablePaths {
+        let root = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
+        PortablePaths {
+            home: root.join("home"),
+            data: root.join("data"),
+            cache: root.join("cache"),
+            temp: root.join("temp"),
+            logs: root.join("logs"),
+            webview: root.join("cache/webview2"),
+            uploads: root.join("data/uploads"),
+            outputs: root.join("data/outputs"),
+            database: root.join("data/deeptutor.sqlite3"),
+            root,
+        }
+    }
+
+    fn assert_profile_directories(home: &Path) {
+        for name in [
+            "Desktop",
+            "Documents",
+            "Downloads",
+            "Pictures",
+            "Music",
+            "Videos",
+            "Favorites",
+        ] {
+            assert!(
+                home.join(name).is_dir(),
+                "便携用户文件夹未创建：{}",
+                home.join(name).display()
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_creates_profile_directories_before_redirecting_userprofile() {
+        let paths = test_paths("deeptutor-profile-test");
+        assert!(!paths.home.exists());
+
+        paths.prepare().expect("首次启动可创建便携用户文件夹");
+
+        let environment = paths.environment();
+        let userprofile = Path::new(
+            environment
+                .get("USERPROFILE")
+                .expect("保留 USERPROFILE 重定向"),
+        );
+        assert_eq!(userprofile, paths.home);
+        assert_profile_directories(userprofile);
+        fs::remove_dir_all(&paths.root).expect("清理测试目录");
+    }
+
+    #[test]
+    fn prepare_repairs_existing_profiles_without_overwriting_user_files() {
+        let paths = test_paths("deeptutor-profile-upgrade-test");
+        let desktop = paths.home.join("Desktop");
+        fs::create_dir_all(&desktop).expect("创建已有的便携用户目录");
+        let existing_file = desktop.join("user-document.txt");
+        fs::write(&existing_file, "保留用户文件").expect("写入已有用户文件");
+
+        paths.prepare().expect("升级时补齐缺少的用户文件夹");
+        assert_profile_directories(&paths.home);
+        paths.prepare().expect("重复启动可以安全补齐用户文件夹");
+        assert_eq!(
+            fs::read_to_string(&existing_file).expect("读取已有用户文件"),
+            "保留用户文件"
+        );
+        fs::remove_dir_all(&paths.root).expect("清理测试目录");
+    }
+
     #[test]
     fn every_runtime_path_stays_inside_the_portable_root() {
         let root =
@@ -282,6 +360,7 @@ mod tests {
         ] {
             assert!(path.starts_with(&root), "{} 逃逸出便携目录", path.display());
         }
+        assert_profile_directories(&user.home);
         assert!(paths.for_user("../escape").is_err());
         let _ = std::fs::remove_dir_all(root);
     }

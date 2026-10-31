@@ -389,13 +389,20 @@ if ($SmokeTest) {
         "cache\webview2",
         "logs\desktop.log",
         "temp",
-        "home"
+        "home",
+        "home\Desktop",
+        "home\Documents",
+        "home\Downloads",
+        "home\Pictures",
+        "home\Music",
+        "home\Videos",
+        "home\Favorites"
     )) {
         if (-not (Test-Path -LiteralPath (Join-Path $smokeRoot $created))) {
             throw "启动后缺少安装目录内状态：$created"
         }
     }
-    $report.Add("EXE 启动冒烟测试：WebView/Rust 服务、25 个模块接口与安装目录数据，通过")
+    $report.Add("EXE 启动冒烟测试：WebView/Rust 服务、25 个模块接口、安装目录数据与 7 个用户文件夹，通过")
 }
 
 $report.Insert(0, "DeepTutor 便携 EXE 验证通过")
