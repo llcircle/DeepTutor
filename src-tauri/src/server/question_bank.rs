@@ -1497,6 +1497,33 @@ pub fn has_entries(state: &AppState) -> Result<bool, String> {
     })
 }
 
+/// 为学习导航提供题库入口，只保留导航和路由所需的稳定字段。
+pub(crate) fn navigation_entries(state: &AppState) -> Result<Vec<Value>, String> {
+    state.database.with_connection(|connection| {
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT id, question, created_at, updated_at
+                FROM qn_entries
+                ORDER BY updated_at DESC, id DESC
+                "#,
+            )
+            .map_err(|error| format!("无法准备学习练习查询：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "id": row.get::<_, i64>(0)?,
+                    "question": row.get::<_, String>(1)?,
+                    "created_at": row.get::<_, f64>(2)?,
+                    "updated_at": row.get::<_, f64>(3)?
+                }))
+            })
+            .map_err(|error| format!("无法读取学习练习列表：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法解析学习练习列表：{error}"))
+    })
+}
+
 fn default_sort() -> String {
     "recent".into()
 }

@@ -48,3 +48,12 @@
 - SHA-256：815702d7c0a67bcd4bba939d64a893e692b238df368b824c516430f162a470f0。
 - 路由审计：OpenAPI 695 项，Rust 711 项，缺失 0 项，额外 31 项兼容/扩展路由。
 - 代码可用：是。
+
+## 2026-10-31 11:26:22 +08:00
+- 任务：修复桌面端点击“学习/资料”后的动态组件与学习索引契约问题，并重新验收最终便携 EXE。
+- 修改：桌面 `next/dynamic` 兼容层支持命名组件直接返回；`/api/dashboard/learning-index` 改为 Rust 汇总 `{sources, failed}`，覆盖书籍、精通之路、阅读、观看和练习五类数据并逐类容错。
+- 测试：Rust 124/124 通过；前端 1312/1312 通过；TypeScript、ESLint、Vite desktop build、OpenAPI 路由审计通过。
+- 产物：`artifacts/DeepTutor-1.7.0-portable-X64.zip`，32,938,236 字节，SHA-256 `3ECDAC0D70B87A3E75B6512D72A1D4E970E7F297E853B031295E338E8576E09E`。
+- 发布校验：X64、30 项原生导入、928 个目录/ZIP 文件一致、禁入项 0、WebView/Rust 启动和 25 个模块接口通过。
+- 实机校验：“学习”“资料”“全部学习”均正常显示；学习索引五类字段和 `failed` 契约正确；SQLite、cache、temp、home、logs 均写入安装目录，用户目录无 DeepTutor 运行数据。
+- 代码可用：是。

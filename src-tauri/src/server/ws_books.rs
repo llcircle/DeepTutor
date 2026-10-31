@@ -3432,7 +3432,7 @@ fn book_payload(state: &AppState, mut book: Value) -> Value {
     book
 }
 
-fn api_books_list(state: &AppState) -> Result<Value, String> {
+pub(crate) fn api_books_list(state: &AppState) -> Result<Value, String> {
     let mut books = state.database.list_resources(BOOK_DOMAIN)?;
     books.sort_by(|left, right| {
         let left_updated = left

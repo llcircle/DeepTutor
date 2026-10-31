@@ -1348,6 +1348,21 @@ async fn list_workspaces(
     Ok(Json(json!({"workspaces": workspaces})))
 }
 
+/// 供学习导航直接复用阅读集合的完整视图。
+pub(crate) fn api_workspace_rows(state: &AppState) -> Result<Vec<Value>, String> {
+    let mut workspaces = Vec::new();
+    for row in state.database.list_resources(WORKSPACE_DOMAIN)? {
+        let id = row
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !id.is_empty() {
+            workspaces.push(workspace_payload(state, id).map_err(|error| error.message)?);
+        }
+    }
+    Ok(workspaces)
+}
+
 async fn workspace_index(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
     let collections = state
         .database

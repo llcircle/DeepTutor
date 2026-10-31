@@ -4,34 +4,23 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import {
+  resolveDynamicExport,
+  type DynamicComponent,
+} from "./dynamic-export";
 
 type DynamicOptions = {
   ssr?: boolean;
   loading?: ComponentType;
 };
 
-type ModuleShape = {
-  default?: ComponentType<Record<string, unknown>>;
-  [key: string]: unknown;
-};
-
 export default function dynamic(
-  loader: () => Promise<ModuleShape>,
+  loader: () => Promise<unknown>,
   options: DynamicOptions = {},
 ) {
   const LazyComponent = lazy(async () => {
-    const loadedModule = await loader();
-    if (loadedModule.default) {
-      return loadedModule as { default: ComponentType };
-    }
-    const firstComponent = Object.values(loadedModule).find(
-      (value): value is ComponentType =>
-        typeof value === "function" || typeof value === "object",
-    );
-    if (!firstComponent) {
-      throw new Error("动态模块没有可渲染的 React 组件");
-    }
-    return { default: firstComponent };
+    const component: DynamicComponent = resolveDynamicExport(await loader());
+    return { default: component };
   });
   const Loading = options.loading;
 

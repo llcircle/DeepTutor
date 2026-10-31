@@ -1513,9 +1513,79 @@ async fn dashboard_refresh_suggestions() -> Json<Value> {
 }
 
 async fn dashboard_learning_index(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({
-        "items": state.database.list_resources("learning_index")?
-    })))
+    Ok(Json(learning_index_payload(&state)))
+}
+
+/// 汇总五个学习入口，并让单个数据源失败只影响对应入口。
+fn learning_index_payload(state: &AppState) -> Value {
+    let mut failed = Vec::new();
+    let books = read_learning_rows("books", &mut failed, || {
+        super::ws_books::api_books_list(state).and_then(|payload| {
+            payload
+                .get("books")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "书籍列表响应缺少 books 字段".to_string())
+        })
+    });
+    let mastery = read_learning_rows("mastery", &mut failed, || {
+        super::mastery::api_topic_rows(state)
+    });
+    let reading = read_learning_rows("reading", &mut failed, || {
+        super::reading::api_workspace_rows(state)
+    });
+    let watching = read_learning_rows("watching", &mut failed, || {
+        Ok(state
+            .database
+            .list_sessions(10_000, 0)?
+            .into_iter()
+            .filter(is_watching_session)
+            .collect())
+    });
+    let practice = read_learning_rows("practice", &mut failed, || {
+        super::question_bank::navigation_entries(state)
+    });
+
+    json!({
+        "sources": {
+            "books": books,
+            "mastery": mastery,
+            "reading": reading,
+            "watching": watching,
+            "practice": practice
+        },
+        "failed": failed
+    })
+}
+
+fn read_learning_rows(
+    kind: &'static str,
+    failed: &mut Vec<&'static str>,
+    reader: impl FnOnce() -> Result<Vec<Value>, String>,
+) -> Vec<Value> {
+    match reader() {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(kind, error = %error, "学习导航数据源读取失败");
+            failed.push(kind);
+            Vec::new()
+        }
+    }
+}
+
+fn is_watching_session(session: &Value) -> bool {
+    if session.get("archived").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
+    let preferences = session.get("preferences").and_then(Value::as_object);
+    preferences
+        .and_then(|value| value.get("workspace_mode"))
+        .and_then(Value::as_str)
+        == Some("immersive_watching")
+        || preferences
+            .and_then(|value| value.get("capability"))
+            .and_then(Value::as_str)
+            == Some("immersive_watching")
 }
 
 async fn dashboard_learning_library(
@@ -2306,9 +2376,166 @@ fn empty_object() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::portable::PortablePaths;
+    use crate::storage::Database;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn test_paths(root: PathBuf) -> PortablePaths {
+        PortablePaths {
+            home: root.join("home"),
+            data: root.join("data"),
+            cache: root.join("cache"),
+            temp: root.join("temp"),
+            logs: root.join("logs"),
+            webview: root.join("cache/webview2"),
+            uploads: root.join("data/uploads"),
+            outputs: root.join("data/outputs"),
+            database: root.join("data/deeptutor.sqlite3"),
+            root,
+        }
+    }
+
+    fn test_state() -> (AppState, TempDir) {
+        let temporary = tempfile::tempdir().expect("创建测试目录");
+        let paths = test_paths(temporary.path().to_path_buf());
+        let database = Database::new(&paths.database);
+        database.initialize().expect("初始化测试数据库");
+        let state = AppState::new(database, paths).expect("创建测试应用状态");
+        (state, temporary)
+    }
 
     #[test]
     fn api_router_constructs_without_overlapping_routes() {
         let _router: Router<AppState> = router();
+    }
+
+    #[test]
+    fn learning_index_keeps_the_frontend_contract() {
+        let (state, _temporary) = test_state();
+        let payload = learning_index_payload(&state);
+        let sources = payload.get("sources").expect("学习索引必须包含 sources");
+
+        for kind in ["books", "mastery", "reading", "watching", "practice"] {
+            assert!(
+                sources.get(kind).and_then(Value::as_array).is_some(),
+                "学习索引缺少数组字段 {kind}"
+            );
+        }
+        assert_eq!(payload.get("failed"), Some(&json!([])));
+    }
+
+    #[test]
+    fn learning_index_reads_every_local_source_and_filters_watching() {
+        let (state, _temporary) = test_state();
+        let now = crate::storage::now();
+        state
+            .database
+            .put_resource(
+                "book",
+                "book-1",
+                &json!({"title": "测试书籍", "status": "reading", "page_count": 2}),
+            )
+            .expect("写入测试书籍");
+        state
+            .database
+            .put_resource(
+                "mastery_topic",
+                "topic-1",
+                &json!({
+                    "path_id": "topic-1",
+                    "name": "测试掌握路径",
+                    "goal": "完成测试",
+                    "status": "active",
+                    "created_at": now,
+                    "updated_at": now,
+                    "revision": 1,
+                    "modules": [],
+                    "mastery_levels": {},
+                    "overrides": {},
+                    "sources": [],
+                    "review_settings": {"desired_retention": 0.9, "scope": "path"},
+                    "learner_profile": null,
+                    "session_ids": []
+                }),
+            )
+            .expect("写入测试掌握路径");
+        state
+            .database
+            .put_resource(
+                "reading_workspace",
+                "reading-1",
+                &json!({
+                    "workspace_id": "reading-1",
+                    "title": "测试阅读集合",
+                    "description": "",
+                    "color": "",
+                    "active_material_id": null,
+                    "tabs": [],
+                    "created_at": now,
+                    "updated_at": now
+                }),
+            )
+            .expect("写入测试阅读集合");
+        state
+            .database
+            .create_session(
+                "watching-1",
+                "测试观看会话",
+                &json!({"workspace_mode": "immersive_watching"}),
+                "",
+            )
+            .expect("写入测试观看会话");
+        state
+            .database
+            .create_session("chat-1", "普通会话", &json!({"workspace_mode": "chat"}), "")
+            .expect("写入普通会话");
+        state
+            .database
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        r#"
+                        INSERT INTO qn_entries(question_id, question, created_at, updated_at)
+                        VALUES('question-1', '测试练习题', ?1, ?1)
+                        "#,
+                        rusqlite::params![now],
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .expect("写入测试练习题");
+
+        let payload = learning_index_payload(&state);
+        let sources = payload.get("sources").expect("学习索引必须包含 sources");
+        assert_eq!(sources.pointer("/books/0/title"), Some(&json!("测试书籍")));
+        assert_eq!(
+            sources.pointer("/mastery/0/name"),
+            Some(&json!("测试掌握路径"))
+        );
+        assert_eq!(
+            sources.pointer("/mastery/0/map/counts/total"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            sources.pointer("/reading/0/title"),
+            Some(&json!("测试阅读集合"))
+        );
+        assert_eq!(
+            sources
+                .get("watching")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            sources.pointer("/watching/0/title"),
+            Some(&json!("测试观看会话"))
+        );
+        assert_eq!(
+            sources.pointer("/practice/0/question"),
+            Some(&json!("测试练习题"))
+        );
+        assert_eq!(payload.get("failed"), Some(&json!([])));
     }
 }

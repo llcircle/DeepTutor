@@ -41,3 +41,10 @@
 - 前端能力门控依赖的 /api/modules 必须在 Rust 后端提供等价契约，否则界面会退化为通用错误/重试状态。
 - 便携性验证不能只检查目录结构；应从隔离副本启动最终 EXE，同时核对 SQLite、WebView2 缓存、日志、temp、home 和动态端口 API。
 - 发行验证应把 PE 导入表、目录/ZIP 文件集合、SHA-256 和真实 WebView 首屏纳入同一套可重复脚本。
+
+## 2026-10-31 11:26:22 +08:00
+- 桌面 `next/dynamic` 兼容层必须同时接受“Promise 组件”和“Promise 模块”。常见写法 `.then(module => module.NamedComponent)` 最终拿到的是组件本身，把它当模块读取 `default` 会报“动态模块没有可渲染的 React 组件”。
+- React 组件判别不能只检查 `typeof value === "object"`；普通模块对象、React 元素和 memo/forwardRef 的结构不同，应分别识别函数组件、类组件、`render` 函数和 `$$typeof`，并对最终导出做显式错误提示。
+- 聚合型导航接口要严格遵守前端读取契约。`/api/dashboard/learning-index` 必须返回 `sources.books/mastery/reading/watching/practice` 和 `failed`，旧的 `{items}` 即使 HTTP 200 也会在 React 状态更新阶段崩溃。
+- Rust 聚合接口应逐数据源隔离错误并记录 `failed`，不能让一个损坏资源使整个导航失败。书籍、掌握路径和阅读集合应返回各自 API 的完整视图，避免前端读取嵌套统计字段时出现二次错误。
+- 便携应用正在运行时，WebView2 会锁定安装目录缓存。重新清空 stage 前先关闭旧 EXE；最终 GUI 验证后也应关闭测试实例，再进行 Git 收口。

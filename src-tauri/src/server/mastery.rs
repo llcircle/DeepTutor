@@ -102,13 +102,17 @@ struct EventsQuery {
 }
 
 async fn list_topics(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    let topics = state
+    Ok(Json(json!({"topics": api_topic_rows(&state)?})))
+}
+
+/// 供学习导航直接复用掌握路径的完整视图，避免返回缺少统计字段的原始资源。
+pub(crate) fn api_topic_rows(state: &AppState) -> Result<Vec<Value>, String> {
+    state
         .database
         .list_resources(TOPIC_DOMAIN)?
         .into_iter()
-        .map(|topic| topic_view(&state, &topic))
-        .collect::<ApiResult<Vec<_>>>()?;
-    Ok(Json(json!({"topics": topics})))
+        .map(|topic| topic_view(state, &topic).map_err(|error| error.message))
+        .collect()
 }
 
 /// 供工具门控判断是否存在可导航的掌握主题。
