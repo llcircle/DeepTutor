@@ -22,6 +22,7 @@ import "@/features/ui-layout/modern/modern.css";
 
 import MotionProvider from "@/components/common/MotionProvider";
 import ToastViewport from "@/components/common/ToastViewport";
+import SettingsPageContent from "@/components/settings/SettingsPageContent";
 import SettingsReturnTracker from "@/components/settings/SettingsReturnTracker";
 import { WorkspaceNavigation } from "@/components/workspaces/WorkspaceNavigation";
 import { AppShellProvider } from "@/context/AppShellContext";
@@ -100,40 +101,49 @@ function composeRoute(pageKey: string, pageLoader: ModuleLoader) {
   });
 }
 
-function SettingsSectionRoute() {
-  const { section = "general" } = useRouterParams();
-  const Content = lazy(async () => {
-    const importedModule = await import("@/components/settings/SettingsPageContent");
+function composeSpecialRoute(
+  pageKey: string,
+  Page: ComponentType<Record<string, unknown>>,
+) {
+  const layouts = layoutKeysFor(pageKey).map((key) => layoutModules[key]);
+  return lazy(async () => {
+    const layoutBundles = await Promise.all(layouts.map((load) => load()));
     return {
-      default: () => (
-        <importedModule.default section={decodeURIComponent(section)} />
-      ),
+      default: function LoadedDesktopSpecialRoute() {
+        let content = <Page />;
+        for (const bundle of [...layoutBundles].reverse()) {
+          const Layout = bundle.default;
+          content = <Layout>{content}</Layout>;
+        }
+        return content;
+      },
     };
   });
-  return <Content />;
 }
+
+function SettingsSectionRoute() {
+  const { section = "general" } = useRouterParams();
+  return <SettingsPageContent section={decodeURIComponent(section)} />;
+}
+
+const ReadingFolderContent = lazy(() =>
+  import("@/components/reading/library/ReadingFolder").then((module) => ({
+    default: module.ReadingFolderPage,
+  })),
+);
 
 function ReadingFolderRoute() {
   const { folderId = "" } = useRouterParams();
-  const Content = lazy(async () => {
-    const importedModule = await import("@/components/reading/library/ReadingFolder");
-    return {
-      default: () => (
-        <importedModule.ReadingFolderPage
-          folderId={decodeURIComponent(folderId)}
-        />
-      ),
-    };
-  });
-  return <Content />;
+  return <ReadingFolderContent folderId={decodeURIComponent(folderId)} />;
 }
+
+const WatchingSessionContent = lazy(
+  () => import("@/components/reading/workspace/LegacyWatchingSession"),
+);
 
 function WatchingSessionRoute() {
   const { sessionId = "" } = useRouterParams();
-  const Content = lazy(
-    () => import("@/components/reading/workspace/LegacyWatchingSession"),
-  );
-  return <Content sessionId={decodeURIComponent(sessionId)} />;
+  return <WatchingSessionContent sessionId={decodeURIComponent(sessionId)} />;
 }
 
 function WatchingHomeRedirect() {
@@ -219,7 +229,9 @@ const routes = Object.entries(pageModules)
   .map(([key, loader]) => ({
     key,
     path: routePath(key),
-    Component: specialPages[key] ?? composeRoute(key, loader),
+    Component: specialPages[key]
+      ? composeSpecialRoute(key, specialPages[key])
+      : composeRoute(key, loader),
   }));
 
 routes.push({
