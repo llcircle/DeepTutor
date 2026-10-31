@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("release", "debug")]
     [string]$Configuration = "release",
@@ -17,6 +17,8 @@ $webOutput = Join-Path $tauriRoot "resources\web"
 $artifactRoot = Join-Path $projectRoot "artifacts\portable"
 $archiveRoot = Join-Path $projectRoot "artifacts"
 $stageRoot = Join-Path $artifactRoot "DeepTutor"
+$packageArtifactRoot = Join-Path $archiveRoot "portable-package"
+$packageRoot = Join-Path $packageArtifactRoot "DeepTutor"
 $isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [System.Runtime.InteropServices.OSPlatform]::Windows
 )
@@ -89,10 +91,6 @@ if (-not (Test-Path -LiteralPath $executable)) {
 }
 
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
-if (Test-Path -LiteralPath $stageRoot) {
-    Assert-ChildPath -Parent $artifactRoot -Child $stageRoot
-    Remove-Item -LiteralPath $stageRoot -Recurse -Force
-}
 New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
 
 $portableExecutable = if ($isWindowsHost) {
@@ -115,6 +113,11 @@ if ($isWindowsHost) {
 
 $resourcesTarget = Join-Path $stageRoot "resources"
 New-Item -ItemType Directory -Path $resourcesTarget -Force | Out-Null
+$resourcesWebTarget = Join-Path $resourcesTarget "web"
+if (Test-Path -LiteralPath $resourcesWebTarget) {
+    Assert-ChildPath -Parent $resourcesTarget -Child $resourcesWebTarget
+    Remove-Item -LiteralPath $resourcesWebTarget -Recurse -Force
+}
 Copy-Item -LiteralPath $webOutput -Destination $resourcesTarget -Recurse -Force
 
 if ($WebView2RuntimeDir) {
@@ -173,6 +176,32 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json -Depth 4 |
     Set-Content -LiteralPath (Join-Path $stageRoot "portable-manifest.json") -Encoding utf8
 
+# 打包目录只包含发行文件。开发机的 data/cache/temp/logs/home 留在
+# $stageRoot 中，既不进入 ZIP，也不会在重新构建时被删除。
+Assert-ChildPath -Parent $archiveRoot -Child $packageArtifactRoot
+if (Test-Path -LiteralPath $packageArtifactRoot) {
+    Remove-Item -LiteralPath $packageArtifactRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+$packageItems = @(
+    [System.IO.Path]::GetFileName($portableExecutable),
+    "resources",
+    "PORTABLE-README.txt",
+    "portable-manifest.json"
+) + $nativeDependencies
+foreach ($relative in @("LICENSE", "THIRD_PARTY_NOTICES.md")) {
+    if (Test-Path -LiteralPath (Join-Path $stageRoot $relative)) {
+        $packageItems += $relative
+    }
+}
+foreach ($relative in $packageItems) {
+    $source = Join-Path $stageRoot $relative
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "便携包缺少发行文件：$source"
+    }
+    Copy-Item -LiteralPath $source -Destination $packageRoot -Recurse -Force
+}
+
 $forbiddenRuntimeNames = @(
     "node.exe",
     "python.exe",
@@ -187,8 +216,8 @@ $forbiddenPathPatterns = @(
     '(^|/)web/\.next(/|$)',
     '(^|/)(data|cache|temp|logs|home)(/|$)'
 )
-$forbidden = Get-ChildItem -LiteralPath $stageRoot -Recurse -Force | Where-Object {
-    $relative = $_.FullName.Substring($stageRoot.Length).Replace('\', '/')
+$forbidden = Get-ChildItem -LiteralPath $packageRoot -Recurse -Force | Where-Object {
+    $relative = $_.FullName.Substring($packageRoot.Length).Replace('\', '/')
     $_.Name -in $forbiddenRuntimeNames -or
     $_.Extension -in $forbiddenExtensions -or
     @($forbiddenPathPatterns | Where-Object { $relative -match $_ }).Count -gt 0
@@ -205,7 +234,7 @@ if (-not $SkipZip) {
         Remove-Item -LiteralPath $zipPath -Force
     }
     [System.IO.Compression.ZipFile]::CreateFromDirectory(
-        $artifactRoot,
+        $packageArtifactRoot,
         $zipPath,
         [System.IO.Compression.CompressionLevel]::Optimal,
         $true
@@ -217,7 +246,7 @@ if (-not $SkipZip) {
 
 $verifyScript = Join-Path $PSScriptRoot "verify_portable.ps1"
 $verifyArguments = @{
-    StageRoot = $stageRoot
+    StageRoot = $packageRoot
 }
 if (-not $SkipZip) {
     $verifyArguments.ZipPath = $zipPath
@@ -225,3 +254,4 @@ if (-not $SkipZip) {
 & $verifyScript @verifyArguments
 
 Write-Host "便携目录：$stageRoot"
+Write-Host "发行包目录：$packageRoot"

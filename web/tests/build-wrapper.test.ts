@@ -207,4 +207,14 @@ test("portable packaging carries and verifies WebView2Loader.dll", () => {
   assert.match(verify, /exeImports -notcontains "WebView2Loader\.dll"/);
   assert.match(verify, /ZIP 与便携目录文件清单不一致/);
   assert.match(verify, /\[switch\]\$SmokeTest/);
+  assert.match(verify, /function Test-PortableRuntimePath/);
+  assert.match(verify, /-\s*not \(Test-PortableRuntimePath/);
+  assert.match(verify, /发行载荷禁入项：0；便携运行时目录已排除/);
+  assert.match(verify, /foreach \(\$file in \$releaseFiles\)/);
+  assert.match(verify, /Copy-Item -LiteralPath \$file\.FullName/);
+  assert.doesNotMatch(build, /Remove-Item\s+-LiteralPath\s+\$stageRoot/);
+  assert.match(build, /\$packageRoot\s*=\s*Join-Path\s+\$packageArtifactRoot/);
+  assert.match(build, /Copy-Item\s+-LiteralPath\s+\$source\s+-Destination\s+\$packageRoot/);
+  assert.match(build, /CreateFromDirectory\(\s*\$packageArtifactRoot/);
+  assert.match(build, /Get-ChildItem\s+-LiteralPath\s+\$packageRoot/);
 });

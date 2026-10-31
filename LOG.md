@@ -64,3 +64,11 @@
 - 验证：TypeScript typecheck、Node 1314/1314、ESLint、desktop Vite build、便携包构建、verify_portable 静态与 SmokeTest 均通过。
 - EXE 实测：“常规”“工作区”“外观”设置分页正常，工作区数据路径位于安装目录。
 - 代码状态：可用。
+
+## 2026-10-31 19:16:44 +08:00
+- 修复模型设置保存：POST /api/settings/apply 接受空请求体，并将服务端保存的 settings_draft.catalog 提升为正式 catalog；响应返回前端需要的 catalog 与 draft。
+- 修复便携构建脚本：artifacts\portable\DeepTutor 只更新发行文件，保留 data/cache/temp/logs/home；干净 ZIP 从 artifacts\portable-package\DeepTutor 生成，避免清除用户数据库与模型草稿。
+- 修复便携验证脚本：发行载荷审计排除安装目录运行时数据，ZIP 仍严格执行禁入项检查；EXE 冒烟测试只复制发行载荷到全新目录，验证首次启动自行创建安装目录状态。
+- 验证结果：cargo fmt/check/test 通过（125 项）；前端 Node 测试通过（1314 项）；OpenAPI 审计无缺失契约操作；ZIP 890 个文件、SHA-256、PE X64 与 30 项导入依赖通过；EXE 启动、Rust API、25 个模块和安装目录数据写入通过。
+- GUI 验证：设置页正常显示，语言模型页面恢复 tju/deepseek-v4.1-flash；点击应用后显示“已应用”，无 400 Bad Request；API 确认正式配置包含 1 个连接、1 个语言模型、1 个嵌入模型，草稿为空。
+- 代码状态：可用。

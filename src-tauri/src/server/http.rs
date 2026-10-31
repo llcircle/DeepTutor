@@ -477,15 +477,38 @@ async fn delete_draft(ScopedState(state): ScopedState) -> ApiResult<Json<Value>>
     Ok(Json(json!({"deleted": true})))
 }
 
-async fn apply_settings(
-    ScopedState(state): ScopedState,
-    Json(body): Json<Value>,
-) -> ApiResult<Json<Value>> {
-    if let Some(catalog) = body.get("catalog") {
-        if !catalog.is_null() {
-            state.database.set_setting("catalog", catalog)?;
+async fn apply_settings(ScopedState(state): ScopedState, body: Bytes) -> ApiResult<Json<Value>> {
+    let payload = if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|_| ApiError::bad_request("设置请求体不是有效 JSON。"))?
+    };
+    apply_settings_payload(&state, payload).await
+}
+
+async fn apply_settings_payload(state: &AppState, body: Value) -> ApiResult<Json<Value>> {
+    let current = state
+        .database
+        .get_setting("catalog")?
+        .unwrap_or_else(|| json!({}));
+    let explicit_catalog = body.get("catalog").filter(|value| !value.is_null());
+    let catalog = if let Some(catalog) = explicit_catalog {
+        if !catalog.is_object() {
+            return Err(ApiError::bad_request("服务目录格式无效。"));
         }
-    }
+        super::catalog::restore_catalog_secrets(catalog, &current)
+    } else {
+        // 无请求体表示应用服务端保存的草稿，避免浏览器重新回传密钥占位符。
+        state
+            .database
+            .get_setting("settings_draft")?
+            .and_then(|draft| draft.get("catalog").cloned())
+            .filter(Value::is_object)
+            .map(|draft| super::catalog::restore_catalog_secrets(&draft, &current))
+            .unwrap_or(current)
+    };
+    state.database.set_setting("catalog", &catalog)?;
     if let Some(ui) = body.get("ui") {
         state.database.merge_setting("ui", ui)?;
     }
@@ -497,7 +520,11 @@ async fn apply_settings(
         }
     }
     state.database.set_setting("settings_draft", &Value::Null)?;
-    Ok(Json(json!({"ok": true})))
+    Ok(Json(json!({
+        "ok": true,
+        "catalog": catalog,
+        "draft": Value::Null
+    })))
 }
 
 async fn apply_settings_service(
@@ -527,7 +554,7 @@ async fn apply_settings_provider(state: ScopedState, body: Json<Value>) -> ApiRe
 }
 
 async fn apply_settings_registry(state: ScopedState, body: Json<Value>) -> ApiResult<Json<Value>> {
-    apply_settings(state, body).await
+    apply_settings_payload(&state, body.0).await
 }
 
 async fn get_network(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
@@ -2408,6 +2435,66 @@ mod tests {
     #[test]
     fn api_router_constructs_without_overlapping_routes() {
         let _router: Router<AppState> = router();
+    }
+
+    #[tokio::test]
+    async fn apply_accepts_an_empty_body_and_promotes_the_stored_draft() {
+        let (state, _temporary) = test_state();
+        state
+            .database
+            .set_setting("catalog", &json!({"version": 1, "services": {}}))
+            .expect("写入当前设置");
+        state
+            .database
+            .set_setting(
+                "settings_draft",
+                &json!({
+                    "catalog": {
+                        "version": 1,
+                        "services": {
+                            "llm": {
+                                "active_profile_id": "profile-1",
+                                "active_model_id": "model-1",
+                                "profiles": [{
+                                    "id": "profile-1",
+                                    "name": "测试模型",
+                                    "api_key": "***",
+                                    "models": [{"id": "model-1", "model": "test-model"}]
+                                }]
+                            }
+                        }
+                    },
+                    "extensions": {}
+                }),
+            )
+            .expect("写入设置草稿");
+
+        let response = apply_settings(ScopedState(state.clone()), Bytes::new())
+            .await
+            .expect("应用空请求体设置");
+
+        let live = state
+            .database
+            .get_setting("catalog")
+            .expect("读取应用后的设置")
+            .expect("应用后必须存在服务目录");
+        assert_eq!(
+            live.pointer("/services/llm/active_model_id"),
+            Some(&json!("model-1"))
+        );
+        assert_eq!(
+            live.pointer("/services/llm/profiles/0/models/0/model"),
+            Some(&json!("test-model"))
+        );
+        assert_eq!(
+            state
+                .database
+                .get_setting("settings_draft")
+                .expect("读取草稿状态"),
+            Some(Value::Null)
+        );
+        assert!(response.0.get("catalog").is_some());
+        assert_eq!(response.0.get("draft"), Some(&Value::Null));
     }
 
     #[test]

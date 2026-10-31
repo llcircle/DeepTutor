@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$StageRoot,
@@ -164,6 +164,13 @@ function Test-ForbiddenPath {
         $RelativePath -match '(?i)\.(py|pyc|pyd)$'
 }
 
+function Test-PortableRuntimePath {
+    param([Parameter(Mandatory = $true)][string]$RelativePath)
+
+    # 这些顶层目录是应用运行后生成的便携数据，不属于发行载荷。
+    return $RelativePath -match '(?i)^(data|cache|temp|logs|home)(/|$)'
+}
+
 $requiredFiles = @(
     "DeepTutor.exe",
     "WebView2Loader.dll",
@@ -226,13 +233,18 @@ foreach ($importGroup in @(
 $report.Add("EXE 与 DLL 导入依赖：$($exeImports.Count + $loaderImports.Count) 项，通过")
 
 $stageFiles = @(Get-ChildItem -LiteralPath $stageRootFull -File -Recurse -Force)
-$forbidden = @($stageFiles | Where-Object {
+$releaseFiles = @($stageFiles | Where-Object {
+    -not (Test-PortableRuntimePath -RelativePath (
+        $_.FullName.Substring($stageRootFull.Length).Replace('\', '/').TrimStart('/')
+    ))
+})
+$forbidden = @($releaseFiles | Where-Object {
     Test-ForbiddenPath -RelativePath $_.FullName.Substring($stageRootFull.Length).Replace('\', '/').TrimStart('/')
 })
 if ($forbidden.Count -gt 0) {
     throw "便携目录包含禁入文件：$($forbidden.FullName -join [Environment]::NewLine)"
 }
-$report.Add("便携目录禁入项：0")
+$report.Add("发行载荷禁入项：0；便携运行时目录已排除")
 
 if ($ZipPath) {
     $zipFull = (Resolve-Path -LiteralPath $ZipPath).Path
@@ -259,7 +271,7 @@ if ($ZipPath) {
             }
             $entry.Substring($zipPrefix.Length)
         } | Sort-Object)
-        $stageRelative = @($stageFiles | ForEach-Object {
+        $stageRelative = @($releaseFiles | ForEach-Object {
             $_.FullName.Substring($stageRootFull.Length).Replace('\', '/').TrimStart('/')
         } | Sort-Object)
         if (Compare-Object -ReferenceObject $stageRelative -DifferenceObject $zipRelative) {
@@ -275,7 +287,7 @@ if ($ZipPath) {
     if ($hashContent -notmatch [regex]::Escape($hash)) {
         throw "ZIP 的 SHA-256 校验文件不匹配。"
     }
-    $report.Add("ZIP 一致性与 SHA-256：$($stageFiles.Count) 个文件，通过")
+    $report.Add("ZIP 一致性与 SHA-256：$($releaseFiles.Count) 个文件，通过")
 }
 
 if ($SmokeTest) {
@@ -293,7 +305,13 @@ if ($SmokeTest) {
         Remove-Item -LiteralPath $smokeRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Path $SmokeWorkspace -Force | Out-Null
-    Copy-Item -LiteralPath $stageRootFull -Destination $smokeRoot -Recurse -Force
+    New-Item -ItemType Directory -Path $smokeRoot -Force | Out-Null
+    foreach ($file in $releaseFiles) {
+        $relative = $file.FullName.Substring($stageRootFull.Length).Replace('\', '/').TrimStart('/')
+        $destination = Join-Path $smokeRoot $relative.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+        Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
+    }
 
     $smokeExe = Join-Path $smokeRoot "DeepTutor.exe"
     $smokeLog = Join-Path $smokeRoot "logs\desktop.log"
