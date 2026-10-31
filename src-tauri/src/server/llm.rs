@@ -207,8 +207,7 @@ where
     let endpoint = endpoint(
         &settings.base_url,
         &["/chat/completions", "/v1/chat/completions"],
-        "https://api.openai.com/v1/chat/completions",
-    );
+    )?;
     let mut body = json!({
         "model": settings.model,
         "messages": messages,
@@ -307,11 +306,7 @@ async fn openai_responses_completion<F>(
 where
     F: FnMut(LlmChunk),
 {
-    let endpoint = endpoint(
-        &settings.base_url,
-        &["/responses", "/v1/responses"],
-        "https://api.openai.com/v1/responses",
-    );
+    let endpoint = endpoint(&settings.base_url, &["/responses", "/v1/responses"])?;
     let (instructions, input) = responses_input(messages);
     let mut body = json!({
         "model": settings.model,
@@ -471,11 +466,7 @@ async fn anthropic_completion<F>(
 where
     F: FnMut(LlmChunk),
 {
-    let endpoint = endpoint(
-        &settings.base_url,
-        &["/messages", "/v1/messages"],
-        "https://api.anthropic.com/v1/messages",
-    );
+    let endpoint = endpoint(&settings.base_url, &["/v1/messages", "/messages"])?;
     let (system, messages) = anthropic_messages(messages);
     let mut body = json!({
         "model": settings.model,
@@ -714,19 +705,36 @@ fn authorized_request(
     Ok(request)
 }
 
-fn endpoint(base_url: &str, suffixes: &[&str], default: &str) -> String {
-    let mut base = base_url.trim().trim_end_matches('/').to_string();
-    if base.is_empty() {
-        return default.to_string();
+pub(super) fn endpoint(base_url: &str, suffixes: &[&str]) -> Result<String, String> {
+    let mut url = url::Url::parse(base_url.trim())
+        .map_err(|_| "模型服务地址无效，请检查提供方 URL；请求尚未发送。".to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("模型服务地址必须是不含账号密码的 HTTP 或 HTTPS URL。".to_string());
     }
-    if suffixes.iter().any(|suffix| base.ends_with(suffix)) {
-        return base;
+    let mut path = url.path().trim_end_matches('/').to_string();
+    if !suffixes.iter().any(|suffix| path.ends_with(suffix)) {
+        // 仅裸域名补默认版本；用户填写的 /api/v3 等前缀必须原样保留。
+        let suffix = suffixes[0];
+        if path.is_empty() && !suffix.starts_with("/v1/") {
+            path.push_str("/v1");
+        }
+        let suffix = if path.ends_with("/v1") && suffix.starts_with("/v1/") {
+            &suffix[3..]
+        } else {
+            suffix
+        };
+        path.push_str(suffix);
     }
-    if !base.ends_with("/v1") && !base.contains("/api/paas/v4") {
-        base.push_str("/v1");
-    }
-    base.push_str(suffixes[0]);
-    base
+    url.set_path(&path);
+    url.set_fragment(None);
+    let mut logged_target = url.clone();
+    logged_target.set_query(None);
+    tracing::info!(target_url = %logged_target, "模型请求目标已解析");
+    Ok(url.to_string())
 }
 
 fn provider_error(value: &Value) -> Option<String> {
@@ -1016,17 +1024,76 @@ mod tests {
     #[test]
     fn endpoint_keeps_full_provider_paths() {
         assert_eq!(
-            endpoint("https://example.test/v1", &["/chat/completions"], ""),
+            endpoint("https://example.test/v1", &["/chat/completions"]).expect("解析服务地址"),
             "https://example.test/v1/chat/completions"
         );
         assert_eq!(
             endpoint(
                 "https://example.test/v1/chat/completions",
-                &["/chat/completions"],
-                ""
-            ),
+                &["/chat/completions"]
+            )
+            .expect("保留完整接口地址"),
             "https://example.test/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn 自定义路径不会被追加错误版本且查询参数保持原位() {
+        for (base, expected) in [
+            (
+                "https://gateway.example/api/v3",
+                "https://gateway.example/api/v3/chat/completions",
+            ),
+            (
+                "https://gateway.example/compatible-mode/v1/",
+                "https://gateway.example/compatible-mode/v1/chat/completions",
+            ),
+            (
+                "https://gateway.example/v1beta/openai",
+                "https://gateway.example/v1beta/openai/chat/completions",
+            ),
+            (
+                "https://gateway.example",
+                "https://gateway.example/v1/chat/completions",
+            ),
+            (
+                "https://gateway.example/api/v3?route=test",
+                "https://gateway.example/api/v3/chat/completions?route=test",
+            ),
+        ] {
+            assert_eq!(
+                endpoint(base, &["/chat/completions"]).expect("解析地址"),
+                expected
+            );
+        }
+        assert_eq!(
+            endpoint("https://gateway.example/api/v3", &["/responses"])
+                .expect("解析 Responses 地址"),
+            "https://gateway.example/api/v3/responses"
+        );
+        for (base, expected) in [
+            (
+                "https://gateway.example/anthropic",
+                "https://gateway.example/anthropic/v1/messages",
+            ),
+            (
+                "https://gateway.example/v1",
+                "https://gateway.example/v1/messages",
+            ),
+        ] {
+            assert_eq!(
+                endpoint(base, &["/v1/messages", "/messages"]).expect("解析 Anthropic 地址"),
+                expected
+            );
+        }
+        for invalid in [
+            "",
+            "not-a-url",
+            "file:///tmp/test",
+            "https://user:password@gateway.example",
+        ] {
+            assert!(endpoint(invalid, &["/chat/completions"]).is_err());
+        }
     }
 
     #[test]

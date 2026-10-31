@@ -1561,6 +1561,7 @@ pub(super) async fn search_with_catalog(
             })
         });
     if let Some(profile) = profile {
+        let profile = catalog::resolve_profile_provider(catalog, "search", profile, None)?;
         let provider = profile
             .get("provider")
             .and_then(Value::as_str)
@@ -1615,6 +1616,7 @@ pub(super) async fn search_with_catalog_strict(
             })
         })
         .ok_or_else(|| "当前搜索配置已不存在。".to_string())?;
+    let profile = catalog::resolve_profile_provider(catalog, "search", profile, None)?;
     let provider = profile
         .get("provider")
         .or_else(|| profile.get("binding"))

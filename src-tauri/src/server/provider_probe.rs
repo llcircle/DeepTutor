@@ -599,6 +599,9 @@ pub(super) fn llm_settings(profile: &Value, model: &Value) -> Result<LlmSettings
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| default_base_url(&provider).to_string());
+    if base_url.trim().is_empty() {
+        return Err("当前提供方没有配置服务地址，请在设置中填写；请求尚未发送。".to_string());
+    }
     let model_name = model
         .get("model")
         .and_then(Value::as_str)
@@ -637,7 +640,8 @@ fn default_base_url(provider: &str) -> &'static str {
         "ollama" => "http://127.0.0.1:11434/v1",
         "lmstudio" => "http://127.0.0.1:1234/v1",
         "gemini" | "google" => "https://generativelanguage.googleapis.com/v1beta/openai",
-        _ => "https://api.openai.com/v1",
+        "openai" => "https://api.openai.com/v1",
+        _ => "",
     }
 }
 
@@ -654,14 +658,7 @@ fn embedding_endpoint(profile: &Value) -> Result<String, String> {
     if base.ends_with("/embeddings") {
         return Ok(base.to_string());
     }
-    if base.ends_with("/v1")
-        || base.ends_with("/api/paas/v4")
-        || base.ends_with("/openai")
-        || base.contains("/compatible-mode/")
-    {
-        return Ok(format!("{base}/embeddings"));
-    }
-    Ok(format!("{base}/v1/embeddings"))
+    llm::endpoint(base, &["/embeddings"])
 }
 
 fn parse_embedding_vectors(payload: &Value) -> Option<Vec<Vec<f64>>> {

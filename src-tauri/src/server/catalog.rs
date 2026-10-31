@@ -187,17 +187,14 @@ pub fn service_selection(
     let requested_profile = profile_id
         .map(str::to_owned)
         .or_else(|| string(service.get("active_profile_id")));
-    let mut profile = service
+    let profile = service
         .get("profiles")?
         .as_array()?
         .iter()
         .find(|profile| profile.get("id").and_then(Value::as_str) == requested_profile.as_deref())?
         .clone();
-    let mut connections = indexed_objects(catalog.get("connections"));
-    if let Some(profile) = profile.as_object_mut() {
-        apply_connection(profile, service_name, &mut connections);
-    }
     if service_name == "search" {
+        let profile = resolve_profile_provider(catalog, service_name, &profile, None).ok()?;
         return Some((profile, None));
     }
     let requested_model = model_id
@@ -209,7 +206,179 @@ pub fn service_selection(
         .iter()
         .find(|model| model.get("id").and_then(Value::as_str) == requested_model.as_deref())
         .cloned()?;
+    let profile = resolve_profile_provider(catalog, service_name, &profile, Some(&model)).ok()?;
     Some((profile, Some(model)))
+}
+
+/// 按前端契约解析模型级、配置级与旧版连接引用，绝不按名称或提供方猜测账户。
+pub fn resolve_profile_provider(
+    catalog: &Value,
+    service_name: &str,
+    profile: &Value,
+    model: Option<&Value>,
+) -> Result<Value, String> {
+    let legacy_ref = profile
+        .get("connection_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|id| json!({"connection_id": id}));
+    let reference = model
+        .and_then(|model| model.get("provider_ref"))
+        .filter(|value| !value.is_null())
+        .or_else(|| profile.get("provider_ref").filter(|value| !value.is_null()))
+        .or(legacy_ref.as_ref());
+    let Some(reference) = reference else {
+        return Ok(profile.clone());
+    };
+    let reference = reference
+        .as_object()
+        .ok_or_else(|| "模型的提供方引用无效，请在设置中重新选择提供方。".to_string())?;
+    let connection_id = string_field(reference, "connection_id");
+    let source_service = string_field(reference, "service");
+    let source_profile_id = string_field(reference, "profile_id");
+    let source = if !connection_id.is_empty() {
+        catalog
+            .get("connections")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.get("id").and_then(Value::as_str) == Some(&connection_id))
+            })
+    } else if !source_service.is_empty() && !source_profile_id.is_empty() {
+        catalog
+            .get("services")
+            .and_then(|services| services.get(&source_service))
+            .and_then(|service| service.get("profiles"))
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    row.get("id").and_then(Value::as_str) == Some(&source_profile_id)
+                        && row.get("provider_ref").is_none_or(Value::is_null)
+                })
+            })
+    } else {
+        None
+    }
+    .and_then(Value::as_object)
+    .ok_or_else(|| "模型引用的提供方已不存在，请在设置中重新选择；请求尚未发送。".to_string())?;
+    let service_override = source
+        .get("service_overrides")
+        .and_then(|overrides| {
+            overrides.get(if service_name == "task" {
+                "llm"
+            } else {
+                service_name
+            })
+        })
+        .and_then(Value::as_object)
+        .filter(|value| value.get("enabled").and_then(Value::as_bool) == Some(true));
+    let binding = service_override
+        .map(|value| string_field(value, "binding"))
+        .filter(|value| !value.is_empty())
+        .or_else(|| string(reference.get("binding")))
+        .or_else(|| string(source.get("binding")))
+        .or_else(|| string(source.get("provider")))
+        .unwrap_or_else(|| "custom".to_string());
+    let mut resolved = profile
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "模型配置格式无效。".to_string())?;
+    resolved.insert(
+        if service_name == "search" {
+            "provider"
+        } else {
+            "binding"
+        }
+        .into(),
+        Value::String(binding.clone()),
+    );
+    for field in ["api_key", "api_version", "extra_headers", "proxy", "app_id"] {
+        resolved.insert(
+            field.into(),
+            source.get(field).cloned().unwrap_or_else(|| {
+                if field == "extra_headers" {
+                    json!({})
+                } else {
+                    json!("")
+                }
+            }),
+        );
+    }
+    for field in ["api_format", "wire_api"] {
+        resolved.insert(
+            field.into(),
+            source.get(field).cloned().unwrap_or_else(|| json!("auto")),
+        );
+    }
+    let source_url = string_field(source, "base_url");
+    let source_kind = if connection_id.is_empty() {
+        source_service
+    } else {
+        string_field(source, "source_service")
+    };
+    let override_url = service_override
+        .map(|value| string_field(value, "base_url"))
+        .filter(|value| !value.is_empty());
+    let base_url = if let Some(url) = override_url {
+        url
+    } else if !source_url.is_empty() {
+        provider_endpoint(&source_url, &source_kind, service_name, &binding)
+    } else {
+        string_field(reference, "default_base_url")
+    };
+    resolved.insert("base_url".into(), Value::String(base_url));
+    Ok(Value::Object(resolved))
+}
+
+fn provider_endpoint(url: &str, source_service: &str, service: &str, binding: &str) -> String {
+    if service == source_service
+        || (matches!(service, "llm" | "task") && matches!(source_service, "llm" | "task"))
+    {
+        return url.to_string();
+    }
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    let mut path = parsed.path().trim_end_matches('/').to_string();
+    for suffix in [
+        "/embeddings",
+        "/api/embed",
+        "/api/embeddings",
+        "/v2/embed",
+        "/audio/speech",
+        "/audio/transcriptions",
+        "/images/generations",
+        "/videos/generations",
+        "/chat/completions",
+        "/responses",
+        "/messages",
+    ] {
+        if let Some(base) = path.strip_suffix(suffix) {
+            path = base.to_string();
+            break;
+        }
+    }
+    if service == "embedding" {
+        match binding {
+            "ollama" => {
+                path = path
+                    .trim_end_matches("/v1")
+                    .trim_end_matches("/api")
+                    .to_string();
+                path.push_str("/api/embed");
+            }
+            "cohere" => {
+                path = path
+                    .trim_end_matches("/v1")
+                    .trim_end_matches("/v2")
+                    .to_string();
+                path.push_str("/v2/embed");
+            }
+            _ => path.push_str("/embeddings"),
+        }
+    }
+    parsed.set_path(&path);
+    parsed.to_string()
 }
 
 pub fn extra_headers(profile: &Value) -> Vec<(String, String)> {
@@ -274,7 +443,6 @@ fn apply_connection(
         return;
     }
     let Some(connection) = connections.get(&connection_id) else {
-        profile.remove("connection_id");
         return;
     };
     for field in ["api_key", "api_version", "extra_headers", "app_id"] {
@@ -435,6 +603,94 @@ fn scalar_string(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn referenced_catalog() -> Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/referenced-catalog.json"))
+            .expect("读取脱敏配置")
+    }
+
+    #[test]
+    fn 模型级引用优先并且不会按相同名称猜测连接() {
+        let mut catalog = referenced_catalog();
+        catalog["connections"]
+            .as_array_mut()
+            .expect("连接")
+            .push(json!({
+                "id": "other", "name": "自定义网关", "provider": "custom",
+                "base_url": "https://other.example/proxy", "api_key": "other-key",
+                "api_format": "anthropic", "extra_headers": {"X-Gateway": "other"}
+            }));
+        let profile = &catalog["services"]["llm"]["profiles"][0];
+        let mut model = profile["models"][0].clone();
+        model["provider_ref"] = json!({"connection_id": "other", "binding": "custom"});
+        let resolved = resolve_profile_provider(&catalog, "llm", profile, Some(&model))
+            .expect("解析模型级引用");
+        assert_eq!(resolved["base_url"], "https://other.example/proxy");
+        assert_eq!(resolved["api_key"], "other-key");
+        assert_eq!(resolved["api_format"], "anthropic");
+        assert_eq!(resolved["extra_headers"]["X-Gateway"], "other");
+        assert_eq!(profile["base_url"], "");
+    }
+
+    #[test]
+    fn 服务选择支持新版引用与嵌入端点() {
+        let mut catalog = referenced_catalog();
+        for (service, profile, model, expected) in [
+            (
+                "llm",
+                "llm-profile",
+                "llm-model",
+                "https://gateway.example/api/v3",
+            ),
+            (
+                "embedding",
+                "embedding-profile",
+                "embedding-model",
+                "https://gateway.example/api/v3/embeddings",
+            ),
+        ] {
+            catalog["services"][service]["active_profile_id"] = json!(profile);
+            catalog["services"][service]["active_model_id"] = json!(model);
+            let (resolved, _) = service_selection(&catalog, service, None, None).expect("选择模型");
+            assert_eq!(resolved["base_url"], expected);
+            assert_eq!(resolved["api_key"], "fixture-key");
+        }
+    }
+
+    #[test]
+    fn 旧版服务配置引用和服务覆盖遵守同一契约() {
+        let mut catalog = referenced_catalog();
+        catalog["services"]["tts"] = json!({"profiles": [{
+            "id": "old-account", "binding": "openai",
+            "base_url": "https://legacy.example/v1/audio/speech", "api_key": "legacy-key",
+            "service_overrides": {"llm": {"enabled": true, "base_url": "https://override.example/api/v3", "binding": "custom"}}
+        }]});
+        let mut profile = catalog["services"]["llm"]["profiles"][0].clone();
+        profile["provider_ref"] =
+            json!({"service": "tts", "profile_id": "old-account", "binding": "custom"});
+        let resolved =
+            resolve_profile_provider(&catalog, "llm", &profile, None).expect("解析旧账号引用");
+        assert_eq!(resolved["base_url"], "https://override.example/api/v3");
+        assert_eq!(resolved["api_key"], "legacy-key");
+        catalog["services"]["tts"]["profiles"][0]["service_overrides"] = json!({});
+        let resolved =
+            resolve_profile_provider(&catalog, "llm", &profile, None).expect("转换语音端点");
+        assert_eq!(resolved["base_url"], "https://legacy.example/v1");
+    }
+
+    #[test]
+    fn 失效连接不会删除引用后使用旧地址() {
+        let catalog = json!({
+            "connections": [],
+            "services": {"llm": {"profiles": [{
+                "id": "profile", "connection_id": "deleted",
+                "binding": "openai", "base_url": "https://api.openai.com/v1"
+            }]}}
+        });
+        let catalog = resolve_catalog_connections(&catalog);
+        let profile = &catalog["services"]["llm"]["profiles"][0];
+        assert!(resolve_profile_provider(&catalog, "llm", profile, None).is_err());
+    }
 
     #[test]
     fn restores_masked_secrets_without_mutating_inputs() {

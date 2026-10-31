@@ -4017,59 +4017,15 @@ async fn synthesize_speech(state: &AppState, text: &str) -> ApiResult<(Vec<u8>, 
             row.get("id").and_then(Value::as_str)
                 == service.get("active_model_id").and_then(Value::as_str)
         })
-        .or_else(|| models.first());
-    let base_url = profile
-        .get("base_url")
-        .and_then(Value::as_str)
-        .unwrap_or("https://api.openai.com/v1")
-        .trim_end_matches('/');
-    let endpoint = profile
-        .get("endpoint")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{base_url}/audio/speech"));
-    let model_name = model
-        .and_then(|row| row.get("model"))
-        .and_then(Value::as_str)
-        .or_else(|| profile.get("default_model").and_then(Value::as_str))
-        .unwrap_or("gpt-4o-mini-tts");
-    let voice = model
-        .and_then(|row| row.get("voice"))
-        .and_then(Value::as_str)
-        .or_else(|| profile.get("voice").and_then(Value::as_str))
-        .unwrap_or("alloy");
-    let api_key = profile.get("api_key").and_then(Value::as_str).unwrap_or("");
-    let response = state
-        .client
-        .post(endpoint)
-        .bearer_auth(api_key)
-        .json(&json!({
-            "model": model_name,
-            "voice": voice,
-            "input": text.chars().take(60_000).collect::<String>(),
-            "response_format": "mp3"
-        }))
-        .send()
-        .await
-        .map_err(|error| ApiError::provider(format!("朗读请求失败：{error}")))?;
-    let status = response.status();
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("audio/mpeg")
-        .to_string();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| ApiError::provider(format!("读取朗读音频失败：{error}")))?;
-    if !status.is_success() {
-        return Err(ApiError::provider(format!(
-            "TTS 服务返回 HTTP {status}。浏览器语音仍可继续使用。"
-        )));
-    }
-    Ok((bytes.to_vec(), content_type))
+        .or_else(|| models.first())
+        .ok_or_else(|| ApiError::bad_request("TTS 服务没有可用模型。"))?;
+    let profile_id = profile.get("id").and_then(Value::as_str).unwrap_or("");
+    let model_id = model.get("id").and_then(Value::as_str).unwrap_or("");
+    super::media_services::synthesize_active_tts(
+        state, &catalog, profile_id, model_id, text, None, None,
+    )
+    .await
+    .map_err(|error| ApiError::provider(format!("朗读请求失败：{error}")))
 }
 
 #[cfg(test)]

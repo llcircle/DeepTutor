@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "connections": [
+    {
+      "id": "gateway",
+      "name": "自定义网关",
+      "provider": "custom",
+      "source_service": "llm",
+      "base_url": "https://gateway.example/api/v3",
+      "api_key": "fixture-key",
+      "api_format": "openai_chat"
+    }
+  ],
+  "services": {
+    "llm": {
+      "active_profile_id": null,
+      "active_model_id": null,
+      "profiles": [
+        {
+          "id": "llm-profile",
+          "name": "自定义网关",
+          "binding": "custom",
+          "base_url": "",
+          "api_key": "",
+          "provider_ref": {
+            "connection_id": "gateway",
+            "binding": "custom",
+            "default_base_url": ""
+          },
+          "models": [
+            {
+              "id": "llm-model",
+              "name": "deepseek-v4.1-flash",
+              "model": "deepseek-v4.1-flash",
+              "provider_ref": {
+                "connection_id": "gateway",
+                "binding": "custom",
+                "default_base_url": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "embedding": {
+      "active_profile_id": null,
+      "active_model_id": null,
+      "profiles": [
+        {
+          "id": "embedding-profile",
+          "name": "自定义网关",
+          "binding": "custom",
+          "base_url": "",
+          "api_key": "",
+          "provider_ref": {
+            "connection_id": "gateway",
+            "binding": "custom",
+            "default_base_url": ""
+          },
+          "models": [
+            {
+              "id": "embedding-model",
+              "model": "bge-m3",
+              "provider_ref": {
+                "connection_id": "gateway",
+                "binding": "custom",
+                "default_base_url": ""
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -2267,20 +2267,8 @@ fn active_llm(catalog: &Value) -> Option<(Value, Value)> {
 }
 
 fn active_service(catalog: &Value, service: &str) -> Option<(Value, Value)> {
-    let service_value = catalog.get("services")?.get(service)?;
-    let profiles = service_value.get("profiles")?.as_array()?;
-    let profile = profiles.iter().find(|profile| {
-        profile.get("id").and_then(Value::as_str)
-            == service_value
-                .get("active_profile_id")
-                .and_then(Value::as_str)
-    })?;
-    let models = profile.get("models")?.as_array()?;
-    let model = models.iter().find(|model| {
-        model.get("id").and_then(Value::as_str)
-            == service_value.get("active_model_id").and_then(Value::as_str)
-    })?;
-    Some((profile.clone(), model.clone()))
+    let (profile, model) = super::catalog::service_selection(catalog, service, None, None)?;
+    Some((profile, model?))
 }
 
 fn active_model_name(catalog: &Value) -> Value {

@@ -1,5 +1,5 @@
 use super::audio_overview;
-use super::llm::{self, ApiFormat, LlmChunk, LlmSettings, LlmUsage};
+use super::llm::{self, LlmChunk, LlmSettings, LlmUsage};
 use super::plugins;
 use super::prompts;
 use super::source_inventory;
@@ -2710,12 +2710,10 @@ pub(super) fn resolve_llm_settings(
     state: &AppState,
     request: &Value,
 ) -> Result<LlmSettings, String> {
-    let catalog = super::catalog::resolve_catalog_connections(
-        &state
-            .database
-            .get_setting("catalog")?
-            .unwrap_or_else(|| json!({})),
-    );
+    let catalog = state
+        .database
+        .get_setting("catalog")?
+        .unwrap_or_else(|| json!({}));
     let service = catalog
         .pointer("/services/llm")
         .ok_or_else(|| "尚未配置语言模型。请先打开设置 → 语言模型添加服务。".to_string())?;
@@ -2770,73 +2768,8 @@ pub(super) fn resolve_llm_settings(
         })
         .or_else(|| models.first())
         .ok_or_else(|| "当前模型服务没有配置模型。".to_string())?;
-    let provider = profile
-        .get("binding")
-        .or_else(|| profile.get("provider"))
-        .and_then(Value::as_str)
-        .unwrap_or("openai")
-        .to_string();
-    let base_url = profile
-        .get("base_url")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| default_base_url(&provider).to_string());
-    let model_name = model
-        .get("model")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| model.get("name").and_then(Value::as_str))
-        .unwrap_or("")
-        .to_string();
-    if model_name.is_empty() {
-        return Err("当前模型缺少模型标识。".to_string());
-    }
-    let headers = profile
-        .get("extra_headers")
-        .and_then(Value::as_object)
-        .map(|headers| {
-            headers
-                .iter()
-                .filter_map(|(key, value)| {
-                    value.as_str().map(|value| (key.clone(), value.to_string()))
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(LlmSettings {
-        provider,
-        base_url,
-        api_key: profile
-            .get("api_key")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        model: model_name,
-        api_format: ApiFormat::from_catalog(
-            profile.get("api_format").and_then(Value::as_str),
-            profile.get("wire_api").and_then(Value::as_str),
-        ),
-        headers,
-    })
-}
-
-fn default_base_url(provider: &str) -> &'static str {
-    match provider.to_ascii_lowercase().as_str() {
-        "anthropic" | "claude" => "https://api.anthropic.com/v1",
-        "deepseek" => "https://api.deepseek.com/v1",
-        "dashscope" | "aliyun" | "bailian" => "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "openrouter" => "https://openrouter.ai/api/v1",
-        "groq" => "https://api.groq.com/openai/v1",
-        "xai" | "grok" => "https://api.x.ai/v1",
-        "moonshot" | "kimi" => "https://api.moonshot.cn/v1",
-        "zhipu" | "glm" => "https://open.bigmodel.cn/api/paas/v4",
-        "siliconflow" => "https://api.siliconflow.cn/v1",
-        "ollama" => "http://127.0.0.1:11434/v1",
-        "lmstudio" => "http://127.0.0.1:1234/v1",
-        "gemini" | "google" => "https://generativelanguage.googleapis.com/v1beta/openai",
-        _ => "https://api.openai.com/v1",
-    }
+    let profile = super::catalog::resolve_profile_provider(&catalog, "llm", profile, Some(model))?;
+    super::provider_probe::llm_settings(&profile, model)
 }
 
 fn enabled_tools(state: &AppState, request: &Value) -> Result<Vec<String>, String> {
@@ -3126,6 +3059,45 @@ mod tests {
         let settings = resolve_llm_settings(&state, &json!({})).expect("解析聊天模型设置");
         assert_eq!(settings.base_url, "https://gateway.example/v1");
         assert_eq!(settings.api_key, "linked-key");
+    }
+
+    #[test]
+    fn 新版提供方引用在未选择默认模型时仍使用网关地址() {
+        let (state, _temporary) = test_state();
+        let catalog: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/referenced-catalog.json"))
+                .expect("读取脱敏配置");
+        state
+            .database
+            .set_setting("catalog", &catalog)
+            .expect("保存配置");
+        let settings = resolve_llm_settings(&state, &json!({})).expect("解析模型");
+        assert_eq!(settings.base_url, "https://gateway.example/api/v3");
+        assert_eq!(settings.api_key, "fixture-key");
+        assert_eq!(settings.provider, "custom");
+        assert_eq!(settings.model, "deepseek-v4.1-flash");
+    }
+
+    #[test]
+    fn 自定义提供方缺少地址或引用失效时不回退到官方地址() {
+        let (state, _temporary) = test_state();
+        let mut catalog: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/referenced-catalog.json"))
+                .expect("读取脱敏配置");
+        catalog["connections"][0]["base_url"] = json!("");
+        state
+            .database
+            .set_setting("catalog", &catalog)
+            .expect("保存空地址配置");
+        let error = resolve_llm_settings(&state, &json!({})).expect_err("禁止空地址请求");
+        assert!(error.contains("请求尚未发送"));
+        catalog["connections"] = json!([]);
+        state
+            .database
+            .set_setting("catalog", &catalog)
+            .expect("保存失效引用配置");
+        let error = resolve_llm_settings(&state, &json!({})).expect_err("禁止失效引用请求");
+        assert!(error.contains("提供方已不存在"));
     }
 
     async fn start_mock_openai() -> (String, tokio::task::JoinHandle<()>) {
