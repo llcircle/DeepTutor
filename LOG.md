@@ -123,3 +123,12 @@
 - EXE：artifacts/portable/DeepTutor/DeepTutor.exe；SHA-256 f591851124d36cd69512dff7c0c1667df9a8f4f9f85560c619c7d0e8483e0eca。
 - ZIP：artifacts/DeepTutor-1.7.0-portable-X64.zip；SHA-256 c540d9408ec363458cc8a3b59479327a9fcc4b36505b439b49421436bbb62c9b。
 - 验收记录：artifacts/file-dialog-verification/result.json；代码与发行产物状态：可用。未推送远端。
+
+## 2026-11-01 00:05:29 +08:00 清理项目 Rust 构建缓存
+
+- 用户要求清理项目根目录，重点处理过大的 target。清理前全目录文件大小为 58.45 GiB，src-tauri/target 为 50.4 GiB，其中 debug 为 46.61 GiB。
+- 操作前确认无 Cargo/Rust 编译进程，target 是当前项目内的普通目录且没有 Git 跟踪文件；现用 EXE 与发行 EXE 哈希一致，便携 ZIP 完整性通过。
+- 通过 cargo clean --manifest-path D:/VS_Projects/DeepTutor/src-tauri/Cargo.toml 清除 121806 个生成文件，释放约 50.4 GiB；清理后约 8.05 GiB，target 目录已不存在。
+- 保留源码、Git 历史、用户数据、node_modules、静态前端资源，以及最新 EXE、便携 ZIP 和 SHA-256。清理后再次通过 31 项 PE 依赖和 ZIP 890 文件一致性校验，现用 EXE 与发行 EXE 哈希仍一致。
+- 自动执行策略拒绝了批量递归删除以及对 .tauri-build-cache 的显式递归删除；改用 Cargo 官方清理命令完成 target 清理，其余缓存和历史验收副本保留，未尝试绕过策略。
+- 本轮未修改应用代码或重新编译；现有发行产物完整。下次编译将重新生成 target，首次构建会更慢。清理报告：artifacts/cleanup-result.json。未推送远端。

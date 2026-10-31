@@ -94,3 +94,10 @@
 - 初始化采用 create_dir_all，保证新安装、旧目录升级及多用户隔离均可重复执行，且不覆盖已有文件；无需更改系统 KnownFolder 注册表，也不回退 C 盘用户目录。
 - 回归应同时覆盖新目录创建、已有文件保留和真实 EXE 文件选择框；本次旧版复现警告，新版 ZIP 内 EXE 连续两次无警告，冒烟脚本已纳入 7 个标准文件夹的检查。
 - 用户要求：以后每次重新编译并交付 EXE，同步更新便携 ZIP 及 .sha256。统一运行 scripts/build_portable.ps1，可按需 -SkipFrontend，不得在交付时 -SkipZip；最后比较 ZIP 与已更新 EXE 哈希。打包和单实例 EXE 验收均串行执行。
+
+## 2026-11-01 00:05:29 +08:00 大型 Rust 项目空间清理
+
+- 本项目 target 可累积至约 50.4 GiB，主要来自 debug/deps（21.18 GiB）和 debug/incremental（19.74 GiB）。清理生成物应优先使用 cargo clean，并事先确认没有编译进程和 target 跟踪源码。
+- 可执行的便携版位于 artifacts/portable/DeepTutor，发行目录位于 artifacts/portable-package/DeepTutor，独立于 target。确认最新 EXE 与 ZIP 校验通过后清理 target，不影响已发布客户端和用户数据。
+- 清理后不要为验证而立即全量编译，否则会重新生成刚清掉的缓存；优先比较现有 EXE 哈希并执行便携包完整性校验。本次根目录从 58.45 GiB 降至 8.05 GiB。
+- 自动执行策略拒绝递归删除时，不改用其他语言或底层文件接口绕过；采用允许的官方工具完成安全范围，并说明保留的缓存目录。
