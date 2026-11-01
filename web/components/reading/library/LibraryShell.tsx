@@ -11,6 +11,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { learningLibrary } from '@/lib/learning-library'
+import { listReadingWorkspaces } from '@/lib/reading-workspace-api'
 
 /**
  * Header shared by the two reading views. Immersive Reading has exactly two
@@ -47,7 +48,7 @@ export function LibraryShell({
         const value =
           view === 'collections'
             ? (await learningLibrary('materials')).items.length
-            : (await learningLibrary('reading')).items.length
+            : (await listReadingWorkspaces()).length
         if (alive) setOtherCount(value)
       } catch {
         // A missing tab count is not worth an error state; the tab still works.

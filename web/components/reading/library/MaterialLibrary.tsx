@@ -27,6 +27,7 @@ import { useTranslation } from "react-i18next";
 import {
   addReadingWorkspaceMaterial,
   deleteReadingMaterial,
+  listReadingWorkspaces,
   retryReadingMaterial,
   type ReadingLibraryCounts,
   type ReadingLibraryFilter,
@@ -82,11 +83,11 @@ export function MaterialLibraryPage() {
     try {
       const [library, collectionRows] = await Promise.all([
         learningLibrary<ReadingLibraryMaterial>("materials"),
-        learningLibrary<ReadingWorkspace>("reading"),
+        listReadingWorkspaces(),
       ]);
       setMaterials(library.items);
       setCounts(null);
-      setCollections(collectionRows.items);
+      setCollections(collectionRows);
       const requested = new URLSearchParams(window.location.search).get('assign');
       if (requested) {
         setAssignFor(library.items.find(row => row.material_id === requested) ?? null);

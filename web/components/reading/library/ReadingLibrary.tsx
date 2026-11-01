@@ -29,6 +29,7 @@ import { useTranslation } from "react-i18next";
 
 import {
   deleteReadingWorkspace,
+  listReadingWorkspaces,
   retryReadingMaterial,
   type ReadingLibraryMaterial,
   type ReadingWorkspace,
@@ -72,10 +73,10 @@ export function ReadingLibraryPage() {
     setError("");
     try {
       const [collectionRows, library] = await Promise.all([
-        learningLibrary<ReadingWorkspace>("reading"),
+        listReadingWorkspaces(),
         learningLibrary<ReadingLibraryMaterial>("materials"),
       ]);
-      setCollections(collectionRows.items.filter(row => !search || `${row.title} ${row.description}`.toLowerCase().includes(search.toLowerCase())));
+      setCollections(collectionRows.filter(row => !search || `${row.title} ${row.description}`.toLowerCase().includes(search.toLowerCase())));
       setMaterials(library.items);
     } catch (caught) {
       // Keep whatever is on screen: an empty list would claim the user has no

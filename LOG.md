@@ -159,3 +159,12 @@
 - 验证：Rust 163 项通过，`cargo fmt --all -- --check` 与 `cargo check --locked` 通过；前端 TypeScript 检查通过，Node 1321 项、Vitest 998 项通过，ESLint 无错误（159 条既有警告）。
 - 发行验证：便携启动冒烟通过；890 个 ZIP 文件、X64 PE 和 31 项导入依赖检查通过。发行目录、便携目录及隔离启动 EXE SHA-256 均为 `f5d3b042a1b1f1c468b41188611d0a06b36d4f17a12aa5a7d2a74d222bf7fb31`；便携 ZIP SHA-256 为 `c02a644b4ddff87a335323feaa0ecc7276be72de05fd9a27388c1e7366a080e8`，与 `.sha256` 一致。
 - `src-tauri/target` 已由发布脚本清理；便携用户目录保留。代码和发行包可用，未推送。
+
+## 2026-11-01 沉浸式阅读资料组未显示
+
+- 根因：阅读资料组保存在 `reading_workspace` 数据域，但资料组页、材料归属选择器和资料组数量仍查询通用 `learningLibrary("reading")`，数据源不匹配。
+- 修复：以上页面和标签数量统一改用 `listReadingWorkspaces()`，材料列表仍从材料库接口读取。
+- 回归验证：新增 2 项资料组/材料库测试；全量 Vitest 1000 项（198 个文件）、Node 1321 项、TypeScript 检查和改动文件 ESLint 检查通过，`git diff --check` 通过。
+- 发行验证：便携构建成功；独立验证确认 X64 PE、31 项 EXE/DLL 导入依赖、禁入项为 0、ZIP 890 个文件及 SHA-256 一致。隔离启动确认 Rust 服务和 25 个模块接口就绪，运行数据位于安装目录。
+- EXE SHA-256：发行目录与便携目录均为 `e95a6beaa23fe07ee9098c8e7803d9bd830c6454547f2945ba6295ab3c27a7f4`；ZIP SHA-256：`0722c21adc162c6776e6bef903e50106122eaacb40fdac6b83837a0897f84eea`，与 `.sha256` 一致。
+- `src-tauri/target` 已由发布脚本清理，既有便携用户目录保留；代码和发行包可用，未推送。
