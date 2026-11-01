@@ -155,6 +155,7 @@ export function ReadingWorkspacePage() {
     activeTab,
     activeConversation,
     linkedSessionIds,
+    activeMaterialId,
     activeLocator,
     setActiveLocator,
     bookmarks,
@@ -488,7 +489,7 @@ export function ReadingWorkspacePage() {
         <SourceNavigator
           material={activeTab?.material ?? null}
           materials={workspace.tabs}
-          activeMaterialId={workspace.active_material_id}
+          activeMaterialId={activeMaterialId}
           onSelectMaterial={(candidate) => void switchMaterial(candidate)}
           onRemoveMaterial={setRemoveTarget}
           outline={material?.outline ?? []}

@@ -20,6 +20,7 @@ import {
   type ReaderActionPayload,
 } from "@/lib/reading-reader-action";
 import { setReadingWorkspace } from "@/lib/reading-turn-state";
+import { readingMaterialSelectionId } from "@/lib/reading-session-material";
 import { READING_WORKSPACE_MODE } from "@/lib/workspace-mode";
 import {
   activateReadingMaterial,
@@ -73,6 +74,11 @@ export function useReadingWorkspace(
   const [organizedNotes, setOrganizedNotes] =
     useState<OrganizedReadingNotes | null>(null);
   const sessionBootRef = useRef("");
+  const [manualSessionMaterial, setManualSessionMaterial] = useState<{
+    workspaceId: string;
+    sessionId: string;
+    materialId: string;
+  } | null>(null);
   const transcriptRequestRef = useRef(0);
 
   const refreshConversations = useCallback(async () => {
@@ -123,14 +129,33 @@ export function useReadingWorkspace(
     [],
   );
 
+  const activeConversation = useMemo(
+    () =>
+      (sessionIdParam
+        ? conversations.find((row) => row.session_id === sessionIdParam)
+        : conversations.find((row) => row.session_id === state.sessionId)) ??
+      null,
+    [conversations, sessionIdParam, state.sessionId],
+  );
+
+  const activeMaterialId = useMemo(
+    () =>
+      workspace
+        ? readingMaterialSelectionId(
+            workspace,
+            activeConversation,
+            sessionIdParam,
+            manualSessionMaterial,
+          )
+        : null,
+    [activeConversation, manualSessionMaterial, sessionIdParam, workspace],
+  );
+
   const activeTab = useMemo(
     () =>
-      workspace?.tabs.find(
-        (tab) => tab.material.material_id === workspace.active_material_id,
-      ) ??
-      workspace?.tabs[0] ??
+      workspace?.tabs.find((tab) => tab.material.material_id === activeMaterialId) ??
       null,
-    [workspace],
+    [activeMaterialId, workspace],
   );
 
   useEffect(() => {
@@ -253,14 +278,6 @@ export function useReadingWorkspace(
       });
   }, [material, t]);
 
-  const activeConversation = useMemo(
-    () =>
-      conversations.find((row) => row.session_id === state.sessionId) ??
-      conversations.find((row) => row.session_id === sessionIdParam) ??
-      null,
-    [conversations, sessionIdParam, state.sessionId],
-  );
-
   const linkedSessionIds = useMemo(
     () => activeConversation?.linked_session_ids ?? [],
     [activeConversation],
@@ -350,7 +367,7 @@ export function useReadingWorkspace(
 
   const switchMaterial = useCallback(
     async (candidate: ReadingLibraryMaterial) => {
-      if (!workspace || candidate.material_id === workspace.active_material_id)
+      if (!workspace || candidate.material_id === activeMaterialId)
         return;
       try {
         const updated = await activateReadingMaterial(
@@ -358,6 +375,13 @@ export function useReadingWorkspace(
           candidate.material_id,
         );
         setWorkspace(updated);
+        if (sessionIdParam) {
+          setManualSessionMaterial({
+            workspaceId: workspace.workspace_id,
+            sessionId: sessionIdParam,
+            materialId: candidate.material_id,
+          });
+        }
         setActiveLocator(1);
         reportViewport({ locator: 1, selection: "" });
       } catch (caught) {
@@ -370,7 +394,7 @@ export function useReadingWorkspace(
         );
       }
     },
-    [reportViewport, t, workspace],
+    [activeMaterialId, reportViewport, sessionIdParam, t, workspace],
   );
 
   useEffect(() => {
@@ -516,6 +540,7 @@ export function useReadingWorkspace(
     material,
     annotations,
     activeTab,
+    activeMaterialId,
     activeConversation,
     linkedSessionIds,
     activeLocator,

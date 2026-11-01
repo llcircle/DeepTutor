@@ -41,6 +41,7 @@ mod provider_probe;
 mod question_bank;
 mod rag_config;
 mod reading;
+mod reading_sessions;
 mod settings_profile;
 mod settings_services;
 mod skills;
@@ -118,6 +119,7 @@ impl AppState {
         update_exit: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, String> {
         question_bank::initialize(&database)?;
+        reading_sessions::restore_legacy_bindings(&database)?;
         let client = Client::builder()
             .no_proxy()
             .user_agent(format!("DeepTutor/{}", env!("CARGO_PKG_VERSION")))
@@ -155,6 +157,7 @@ impl AppState {
         let paths = self.paths.for_user(user_id)?;
         let first_open = !paths.database.exists();
         let database = Database::new(&paths.database);
+        database.initialize()?;
         let mut state = Self::new(database, paths)?;
         if first_open {
             for key in [
@@ -427,11 +430,116 @@ mod tests {
     use super::*;
     use axum::http::{header::LOCATION, StatusCode};
     use axum::response::IntoResponse;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    fn test_paths(root: &Path) -> PortablePaths {
+        PortablePaths {
+            root: root.to_path_buf(),
+            home: root.join("home"),
+            data: root.join("data"),
+            cache: root.join("cache"),
+            temp: root.join("temp"),
+            logs: root.join("logs"),
+            webview: root.join("cache/webview2"),
+            uploads: root.join("data/uploads"),
+            outputs: root.join("data/outputs"),
+            database: root.join("data/deeptutor.sqlite3"),
+        }
+    }
 
     #[tokio::test]
     async fn root_redirects_to_the_desktop_workspace() {
         let response = root().await.into_response();
         assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(response.headers()[LOCATION], "/chat");
+    }
+
+    #[test]
+    fn 隔离用户数据库初始化时恢复旧沉浸式阅读会话关联() {
+        let directory = tempdir().expect("创建临时便携目录");
+        let paths = test_paths(directory.path());
+        let central_database = Database::new(&paths.database);
+        central_database.initialize().expect("初始化主数据库");
+        let central = AppState::new(central_database, paths.clone()).expect("创建主状态");
+
+        let user_paths = paths.for_user("learner-1").expect("创建隔离用户目录");
+        let user_database = Database::new(&user_paths.database);
+        user_database.initialize().expect("初始化隔离数据库");
+        user_database
+            .put_resource(
+                "reading_workspace",
+                "collection",
+                &json!({
+                    "workspace_id": "collection",
+                    "active_material_id": "material-a",
+                    "tabs": [{"material_id": "material-a"}, {"material_id": "material-b"}]
+                }),
+            )
+            .expect("写入用户资料集");
+        for id in ["material-a", "material-b"] {
+            user_database
+                .put_resource("reading_material", id, &json!({"material_id": id}))
+                .expect("写入用户材料");
+        }
+        user_database
+            .create_session(
+                "legacy-reading",
+                "旧阅读会话",
+                &json!({"workspace_mode": "immersive_reading"}),
+                "",
+            )
+            .expect("写入旧会话");
+        user_database
+            .put_resource(
+                "pending_input",
+                "legacy-turn",
+                &json!({
+                    "session_id": "legacy-reading",
+                    "request": {
+                        "session_id": "legacy-reading",
+                        "reading_workspace_id": "collection",
+                        "reading_material_id": "material-b"
+                    }
+                }),
+            )
+            .expect("写入历史回合关联");
+
+        let user_state = central.user_state("learner-1").expect("加载隔离用户状态");
+        let session = user_state
+            .database
+            .get_session_meta("legacy-reading")
+            .expect("读取旧会话")
+            .expect("旧会话存在");
+        assert_eq!(session["preferences"]["reading_workspace_id"], "collection");
+        assert_eq!(session["preferences"]["reading_material_id"], "material-b");
+        let reading_session = user_state
+            .database
+            .get_resource("reading_session", "legacy-reading")
+            .expect("读取阅读会话资源")
+            .expect("阅读会话资源已恢复");
+        assert_eq!(reading_session["workspace_id"], "collection");
+        assert_eq!(reading_session["active_material_id"], "material-b");
+    }
+
+    #[test]
+    fn 隔离用户首次打开时初始化完整数据库结构() {
+        let directory = tempdir().expect("创建临时便携目录");
+        let paths = test_paths(directory.path());
+        let central_database = Database::new(&paths.database);
+        central_database.initialize().expect("初始化主数据库");
+        let central = AppState::new(central_database, paths.clone()).expect("创建主状态");
+
+        let user_paths = paths.for_user("learner-2").expect("创建隔离用户目录");
+        std::fs::File::create(&user_paths.database).expect("创建尚未初始化的隔离数据库文件");
+        let user_state = central.user_state("learner-2").expect("初始化隔离用户状态");
+        assert!(
+            user_state
+                .database
+                .get_setting("catalog")
+                .expect("读取默认设置")
+                .is_some(),
+            "隔离数据库应创建完整 schema 并播种默认设置"
+        );
     }
 }

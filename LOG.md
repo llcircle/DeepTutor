@@ -149,3 +149,13 @@
 - 验证：Rust 156 项通过；前端 Node 1314 项通过；OpenAPI 695 个契约操作无缺失；便携 EXE、ZIP、SHA-256、PE 依赖、隔离启动、25 个模块及安装目录数据路径检查通过。
 - 当前发行物：`artifacts/portable/DeepTutor/DeepTutor.exe` 与 `artifacts/portable-package/DeepTutor/DeepTutor.exe` 哈希均为 `ee2fc65fbaa2b9f87b74acc3d80ea61451c592599a8b6bd1cfc4b30ac825ce4a`；ZIP 哈希为 `98f2c32eae0609362cef2691325533096045ee03fc326a54d9df4c762492814c`。
 - `src-tauri/target` 已清理，不重复编译；本轮代码与发行物状态：可用。未推送远端。
+
+## 2026-11-01 13:19:00 +08:00 沉浸式阅读历史会话恢复关联
+
+- 用户反馈：主页打开某条沉浸式阅读聊天记录后，没有切换到该记录对应的书籍。
+- 根因：历史会话缺少持久化的资料集/材料关联；阅读界面一直读取资料集的全局活动材料，而非当前路由会话的材料。
+- Rust 启动时从旧会话偏好、待处理回合和消息请求快照恢复明确关联，校验材料确实属于对应资料集；隔离用户数据库先初始化完整 schema，迁移保持幂等且不猜测缺失关联。
+- 前端根据路由会话派生材料选择；同一会话内的手动切书优先，资料集轮询和会话切换不会覆盖或串用选择。
+- 验证：Rust 163 项通过，`cargo fmt --all -- --check` 与 `cargo check --locked` 通过；前端 TypeScript 检查通过，Node 1321 项、Vitest 998 项通过，ESLint 无错误（159 条既有警告）。
+- 发行验证：便携启动冒烟通过；890 个 ZIP 文件、X64 PE 和 31 项导入依赖检查通过。发行目录、便携目录及隔离启动 EXE SHA-256 均为 `f5d3b042a1b1f1c468b41188611d0a06b36d4f17a12aa5a7d2a74d222bf7fb31`；便携 ZIP SHA-256 为 `c02a644b4ddff87a335323feaa0ecc7276be72de05fd9a27388c1e7366a080e8`，与 `.sha256` 一致。
+- `src-tauri/target` 已由发布脚本清理；便携用户目录保留。代码和发行包可用，未推送。
