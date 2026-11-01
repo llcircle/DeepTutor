@@ -31,7 +31,7 @@ pub struct ToolOutcome {
 }
 
 impl ToolOutcome {
-    fn success(content: impl Into<String>, metadata: Value) -> Self {
+    pub(super) fn success(content: impl Into<String>, metadata: Value) -> Self {
         Self {
             content: content.into(),
             metadata,
@@ -40,7 +40,7 @@ impl ToolOutcome {
         }
     }
 
-    fn failure(message: impl Into<String>) -> Self {
+    pub(super) fn failure(message: impl Into<String>) -> Self {
         Self {
             content: message.into(),
             metadata: json!({"kind": "tool_error"}),
@@ -53,7 +53,7 @@ impl ToolOutcome {
 pub fn definitions(
     _capability: &str,
     enabled_tools: &[String],
-    _request: Option<&Value>,
+    request: Option<&Value>,
     deferred_definitions: &[Value],
 ) -> Vec<Value> {
     let enabled = |name: &str| enabled_tools.iter().any(|tool| tool == name);
@@ -103,19 +103,37 @@ pub fn definitions(
         ("invoke_other", invoke_other_definition),
     ];
     let mut tools = Vec::new();
-    let mut names = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::<String>::new();
     for (name, factory) in candidates {
-        if enabled(name) && names.insert(name) {
+        if enabled(name) && names.insert(name.to_string()) {
             let mut definition = factory();
             definition["function"]["name"] = Value::String(name.to_string());
             tools.push(definition);
         }
     }
+    if request.is_some_and(super::reading::is_reading_turn) {
+        for definition in super::reading::tool_definitions() {
+            let Some(name) = definition
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            if enabled(&name) && names.insert(name) {
+                tools.push(definition);
+            }
+        }
+    }
     for definition in deferred_definitions {
-        let Some(name) = definition.pointer("/function/name").and_then(Value::as_str) else {
+        let Some(name) = definition
+            .pointer("/function/name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
             continue;
         };
-        if enabled(name) && names.insert(name) {
+        if enabled(&name) && names.insert(name) {
             tools.push(definition.clone());
         }
     }
@@ -151,6 +169,9 @@ pub async fn execute_with_runtime(
     runtime: ToolRuntime<'_>,
 ) -> ToolOutcome {
     let state = runtime.state;
+    if let Some(outcome) = super::reading::execute_tool(name, arguments, &runtime).await {
+        return outcome;
+    }
     match name {
         "web_search" => web_search(arguments, state).await,
         "paper_search" => paper_search(arguments, state).await,
@@ -5262,6 +5283,41 @@ pub fn ensure_inside(path: &Path, root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 沉浸式阅读回合会向模型注册全部阅读工具() {
+        let request = json!({
+            "workspace_mode": "immersive_reading",
+            "reading_workspace_id": "workspace-test",
+            "reading_material_id": "material-test"
+        });
+        let enabled = super::super::reading::tool_names()
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+
+        let definitions = definitions("chat", &enabled, Some(&request), &[]);
+        let names = definitions
+            .iter()
+            .filter_map(|definition| definition.pointer("/function/name").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        assert_eq!(names.len(), 8);
+        for name in super::super::reading::tool_names() {
+            assert!(names.contains(name), "缺少阅读工具：{name}");
+        }
+    }
+
+    #[test]
+    fn 普通聊天不会注册沉浸式阅读工具() {
+        let enabled = super::super::reading::tool_names()
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        let definitions = definitions("chat", &enabled, Some(&json!({})), &[]);
+
+        assert!(definitions.is_empty());
+    }
 
     #[test]
     fn html_text_is_cleaned() {

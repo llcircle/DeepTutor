@@ -195,7 +195,9 @@ pub async fn start_turn(state: AppState, request: Value) -> Result<Value, String
         "capability": capability,
         "language": language,
         "workspace_id": if workspace_id.is_empty() { Value::Null } else { Value::String(workspace_id.clone()) },
-        "workspace_mode": request.get("workspace_mode").cloned().unwrap_or(Value::Null)
+        "workspace_mode": request.get("workspace_mode").cloned().unwrap_or(Value::Null),
+        "reading_workspace_id": request.get("reading_workspace_id").cloned().unwrap_or(Value::Null),
+        "reading_material_id": request.get("reading_material_id").cloned().unwrap_or(Value::Null)
     });
     let mut request = request;
     let (session_id, session_created) = if let Some(submission_id) =
@@ -248,6 +250,7 @@ pub async fn start_turn(state: AppState, request: Value) -> Result<Value, String
     } else {
         ensure_session(&state, &request, &content, &capability)?
     };
+    super::reading::normalize_turn_request(&state, &session_id, &mut request)?;
     if let Some(active) = state.database.get_active_turn(&session_id)? {
         let requested_superseded = request
             .get("superseded_turn_id")
@@ -647,7 +650,89 @@ pub async fn regenerate(
             .and_then(|message| message.get("capability").cloned())
             .unwrap_or_else(|| Value::String("chat".to_string()));
     }
+    restore_reading_snapshot(&last_user, &mut request);
     start_turn(state, request).await
+}
+
+fn restore_reading_snapshot(user_message: &Value, request: &mut Value) {
+    let snapshot = user_message
+        .pointer("/metadata/request_snapshot")
+        .or_else(|| user_message.pointer("/metadata/requestSnapshot"));
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+
+    let turn_fields = snapshot.get("readingTurnFields").unwrap_or(&Value::Null);
+    for key in [
+        "reading_workspace_id",
+        "reading_material_id",
+        "reading_material_revision",
+        "reading_viewport",
+        "workspace_mode",
+    ] {
+        if request.get(key).is_some_and(|value| !value.is_null()) {
+            continue;
+        }
+        let saved = match key {
+            "reading_workspace_id" => snapshot
+                .get("readingWorkspaceId")
+                .or_else(|| snapshot.get(key))
+                .or_else(|| turn_fields.get(key)),
+            "reading_material_id" => snapshot
+                .get("readingMaterialId")
+                .or_else(|| snapshot.get(key))
+                .or_else(|| turn_fields.get(key)),
+            "reading_material_revision" => snapshot
+                .get("readingMaterialRevision")
+                .or_else(|| snapshot.get(key))
+                .or_else(|| turn_fields.get(key)),
+            "reading_viewport" => turn_fields.get(key).or_else(|| snapshot.get(key)),
+            "workspace_mode" => snapshot.get("workspaceMode").or_else(|| snapshot.get(key)),
+            _ => None,
+        };
+        if let Some(saved) = saved {
+            request[key] = saved.clone();
+        }
+    }
+
+    if request.get("reading_viewport").is_none_or(Value::is_null) {
+        if let Some(selection) = snapshot.get("readingSelection") {
+            let quote = selection
+                .get("quote")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let locator = selection
+                .get("locator")
+                .cloned()
+                .unwrap_or_else(|| json!(0));
+            if !quote.is_empty() {
+                request["reading_viewport"] = json!({
+                    "selection": quote,
+                    "locator": locator
+                });
+            }
+        }
+    }
+}
+
+fn apply_reading_switch(request: &mut Value, metadata: &Value) -> Option<(String, Value)> {
+    if metadata.get("reader_action").and_then(Value::as_str) != Some("switch_tab") {
+        return None;
+    }
+    let material_id = metadata
+        .get("material_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())?
+        .to_string();
+    let revision = metadata
+        .get("material_revision")
+        .filter(|value| value.as_u64().is_some_and(|revision| revision >= 1))
+        .cloned()
+        .unwrap_or_else(|| json!(1));
+
+    request["reading_material_id"] = Value::String(material_id.clone());
+    request["reading_material_revision"] = revision.clone();
+    Some((material_id, revision))
 }
 
 async fn resume_persisted_turn(state: AppState, turn_id: &str, reply: Value) -> Result<(), String> {
@@ -1213,6 +1298,25 @@ async fn run_turn(context: &mut TurnContext) {
                     status = "failed";
                     failure = Some(("event_persist_failed".to_string(), error, false));
                     break;
+                }
+                if outcome.success && tool_call.name == "reading_switch_tab" {
+                    if let Some((material_id, revision)) =
+                        apply_reading_switch(&mut context.request, &outcome.metadata)
+                    {
+                        if let Err(error) = context.state.database.update_session_preferences(
+                            &context.session_id,
+                            &json!({
+                                "reading_material_id": material_id,
+                                "reading_material_revision": revision
+                            }),
+                        ) {
+                            tracing::warn!(
+                                session_id = %context.session_id,
+                                error = %error,
+                                "无法更新阅读会话的当前材料偏好"
+                            );
+                        }
+                    }
                 }
                 collect_tool_sources(context, &outcome.metadata);
                 collect_tool_attachments(context, &outcome.metadata);
@@ -2187,7 +2291,7 @@ fn ensure_session(
     Ok((session_id, true))
 }
 
-fn build_provider_messages(
+pub(super) fn build_provider_messages(
     state: &AppState,
     request: &Value,
     session_id: &str,
@@ -2203,10 +2307,24 @@ fn build_provider_messages(
             .unwrap_or("chat"),
     );
     let mut system = prompts::system_prompt(&capability, language);
+    if super::reading::is_reading_turn(request) && capability != "immersive_reading" {
+        let playbook = prompts::reading_playbook(language);
+        if !playbook.trim().is_empty() {
+            system.push_str("\n\n");
+            system.push_str(playbook.trim());
+        }
+    }
     if let Some(custom_prompt) = non_empty(request, "system_prompt") {
         system = format!("{custom_prompt}\n\n{system}");
     }
-    let extra_context = build_turn_context(state, request, session_id, source_manifest)?;
+    let extra_context = build_turn_context(
+        state,
+        request,
+        session_id,
+        content,
+        language,
+        source_manifest,
+    )?;
     let isolated_context = request
         .get("isolated_context")
         .and_then(Value::as_bool)
@@ -2260,11 +2378,13 @@ fn build_provider_messages(
     } else {
         format!("{content}\n\n[回合上下文]\n{extra_context}")
     };
-    let current = provider_content(
-        state,
-        &current_text,
-        request.get("attachments").and_then(Value::as_array),
-    );
+    let mut current_attachments = request
+        .get("attachments")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    current_attachments.extend(super::reading::viewport_image_attachments(state, request));
+    let current = provider_content(state, &current_text, Some(&current_attachments));
     let has_last_user = selected.last().is_some_and(|(role, _)| role == "user");
     if has_last_user {
         if let Some((_, message_content)) = selected.last_mut() {
@@ -2373,9 +2493,16 @@ fn build_turn_context(
     state: &AppState,
     request: &Value,
     session_id: &str,
+    content: &str,
+    language: &str,
     source_manifest: &str,
 ) -> Result<String, String> {
     let mut parts = Vec::new();
+    if let Some(reading) = super::reading::turn_context(state, request, content, language)? {
+        if !reading.trim().is_empty() {
+            parts.push(reading);
+        }
+    }
     if let Some(knowledge_bases) = request.get("knowledge_bases").and_then(Value::as_array) {
         let names = knowledge_bases
             .iter()
@@ -2993,6 +3120,71 @@ mod tests {
             .create_session(&session_id, "测试会话", &json!({}), "")
             .expect("创建测试会话");
         session_id
+    }
+
+    #[test]
+    fn 阅读切换会更新本轮后续工具的材料绑定() {
+        let mut request = json!({
+            "reading_workspace_id": "workspace-a",
+            "reading_material_id": "material-a",
+            "reading_material_revision": 1
+        });
+        let metadata = json!({
+            "reader_action": "switch_tab",
+            "material_id": "material-b",
+            "material_revision": 3
+        });
+
+        let switched = apply_reading_switch(&mut request, &metadata);
+
+        assert_eq!(switched, Some(("material-b".to_string(), json!(3))));
+        assert_eq!(request["reading_material_id"], "material-b");
+        assert_eq!(request["reading_material_revision"], 3);
+        assert_eq!(
+            apply_reading_switch(&mut request, &json!({"material_id": "ignored"})),
+            None
+        );
+    }
+
+    #[test]
+    fn 重新生成会恢复原始阅读材料和视口() {
+        let user_message = json!({
+            "metadata": {
+                "request_snapshot": {
+                    "readingWorkspaceId": "workspace-a",
+                    "readingMaterialId": "material-a",
+                    "readingMaterialRevision": 2,
+                    "workspaceMode": "immersive_reading",
+                    "readingTurnFields": {
+                        "reading_viewport": {
+                            "locator": 7,
+                            "selection": "原始选区"
+                        }
+                    }
+                }
+            }
+        });
+        let mut request = json!({
+            "reading_workspace_id": null,
+            "reading_material_id": null,
+            "reading_viewport": null,
+            "workspace_mode": null
+        });
+
+        restore_reading_snapshot(&user_message, &mut request);
+
+        assert_eq!(request["reading_workspace_id"], "workspace-a");
+        assert_eq!(request["reading_material_id"], "material-a");
+        assert_eq!(request["reading_material_revision"], 2);
+        assert_eq!(request["workspace_mode"], "immersive_reading");
+        assert_eq!(
+            request.pointer("/reading_viewport/locator"),
+            Some(&json!(7))
+        );
+        assert_eq!(
+            request.pointer("/reading_viewport/selection"),
+            Some(&json!("原始选区"))
+        );
     }
 
     fn configure_mock_model(state: &AppState, base_url: String) {

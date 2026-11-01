@@ -217,4 +217,13 @@ test("portable packaging carries and verifies WebView2Loader.dll", () => {
   assert.match(build, /Copy-Item\s+-LiteralPath\s+\$source\s+-Destination\s+\$packageRoot/);
   assert.match(build, /CreateFromDirectory\(\s*\$packageArtifactRoot/);
   assert.match(build, /Get-ChildItem\s+-LiteralPath\s+\$packageRoot/);
+  assert.match(build, /\[switch\]\$KeepBuildArtifacts/);
+  assert.match(build, /拒绝自动清理作为重解析点的 Cargo 构建目录/);
+  assert.match(build, /Assert-ChildPath -Parent \$tauriRoot -Child \$resolvedTargetRoot/);
+  assert.match(build, /Remove-Item -LiteralPath \$resolvedTargetRoot -Recurse -Force/);
+  assert.ok(
+    build.indexOf("& $verifyScript @verifyArguments") <
+      build.indexOf("Remove-Item -LiteralPath $resolvedTargetRoot"),
+    "必须先验证便携发行文件，再清理 Cargo 中间产物",
+  );
 });

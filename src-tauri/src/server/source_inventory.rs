@@ -233,6 +233,11 @@ pub fn request_snapshot(request: &Value) -> Value {
     let mut snapshot = serde_json::Map::new();
     for key in [
         "reading_references",
+        "workspace_mode",
+        "reading_workspace_id",
+        "reading_material_id",
+        "reading_material_revision",
+        "reading_viewport",
         "book_references",
         "notebook_references",
         "history_references",
@@ -243,6 +248,76 @@ pub fn request_snapshot(request: &Value) -> Value {
         if let Some(value) = request.get(key).filter(|value| value.is_array()) {
             snapshot.insert(key.to_string(), value.clone());
         }
+    }
+
+    for (request_key, snapshot_key) in [
+        ("workspace_mode", "workspaceMode"),
+        ("reading_workspace_id", "readingWorkspaceId"),
+        ("reading_material_id", "readingMaterialId"),
+        ("reading_material_revision", "readingMaterialRevision"),
+    ] {
+        if let Some(value) = request.get(request_key).filter(|value| !value.is_null()) {
+            snapshot.insert(snapshot_key.to_string(), value.clone());
+        }
+    }
+    if let Some(viewport) = request.get("reading_viewport").and_then(Value::as_object) {
+        let mut saved = serde_json::Map::new();
+        if let Some(locator) = viewport.get("locator").and_then(Value::as_u64) {
+            saved.insert("locator".to_string(), Value::from(locator));
+        }
+        if let Some(selection) = viewport
+            .get("selection")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|selection| !selection.is_empty())
+        {
+            saved.insert(
+                "selection".to_string(),
+                Value::String(selection.chars().take(2_000).collect()),
+            );
+            snapshot.insert(
+                "readingSelection".to_string(),
+                json!({
+                    "quote": selection.chars().take(2_000).collect::<String>(),
+                    "locator": saved.get("locator").cloned().unwrap_or_else(|| Value::from(0))
+                }),
+            );
+        }
+        if let Some(seconds) = viewport.get("time_seconds").and_then(Value::as_f64) {
+            if seconds.is_finite() && seconds >= 0.0 {
+                saved.insert(
+                    "time_seconds".to_string(),
+                    json!(seconds.min(24.0 * 60.0 * 60.0)),
+                );
+            }
+        }
+        if !saved.is_empty() {
+            snapshot.insert("readingViewport".to_string(), Value::Object(saved.clone()));
+            snapshot.insert(
+                "readingTurnFields".to_string(),
+                json!({"reading_viewport": Value::Object(saved)}),
+            );
+        }
+    }
+    let mut turn_fields = snapshot
+        .get("readingTurnFields")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for (request_key, snapshot_key) in [
+        ("reading_workspace_id", "readingWorkspaceId"),
+        ("reading_material_id", "readingMaterialId"),
+        ("reading_material_revision", "readingMaterialRevision"),
+    ] {
+        if let Some(value) = snapshot.get(snapshot_key) {
+            turn_fields.insert(request_key.to_string(), value.clone());
+        }
+    }
+    if let Some(value) = snapshot.get("workspaceMode") {
+        turn_fields.insert("workspace_mode".to_string(), value.clone());
+    }
+    if !turn_fields.is_empty() {
+        snapshot.insert("readingTurnFields".to_string(), Value::Object(turn_fields));
     }
     Value::Object(snapshot)
 }
@@ -717,6 +792,42 @@ pub fn metadata_for_read(sid: &str, text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 阅读回合快照保留绑定信息但不复制附件正文() {
+        let request = json!({
+            "workspace_mode": "immersive_reading",
+            "reading_workspace_id": "workspace-a",
+            "reading_material_id": "material-a",
+            "reading_material_revision": 4,
+            "reading_viewport": {
+                "locator": 12,
+                "selection": "选中的原文",
+                "time_seconds": 42.5,
+                "image_base64": "不得保存的图像正文"
+            },
+            "attachments": [{
+                "type": "image",
+                "base64": "不得保存的附件正文"
+            }]
+        });
+
+        let snapshot = request_snapshot(&request);
+
+        assert_eq!(snapshot["workspaceMode"], "immersive_reading");
+        assert_eq!(snapshot["readingWorkspaceId"], "workspace-a");
+        assert_eq!(snapshot["readingMaterialId"], "material-a");
+        assert_eq!(snapshot["readingMaterialRevision"], 4);
+        assert_eq!(
+            snapshot.pointer("/readingTurnFields/reading_viewport/locator"),
+            Some(&json!(12))
+        );
+        assert_eq!(
+            snapshot.pointer("/readingSelection/quote"),
+            Some(&json!("选中的原文"))
+        );
+        assert!(!snapshot.to_string().contains("不得保存"));
+    }
 
     #[test]
     fn inventory_renders_cumulative_rows_without_truncating_index() {

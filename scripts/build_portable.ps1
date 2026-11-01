@@ -6,6 +6,7 @@ param(
     [string]$StageName = "DeepTutor",
     [switch]$SkipFrontend,
     [switch]$SkipZip,
+    [switch]$KeepBuildArtifacts,
     [string]$WebView2RuntimeDir = ""
 )
 
@@ -254,6 +255,21 @@ if (-not $SkipZip) {
     $verifyArguments.ZipPath = $zipPath
 }
 & $verifyScript @verifyArguments
+
+if (-not $KeepBuildArtifacts -and (Test-Path -LiteralPath $targetRoot -PathType Container)) {
+    Assert-ChildPath -Parent $tauriRoot -Child $targetRoot
+    $targetItem = Get-Item -LiteralPath $targetRoot -Force
+    if (($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "拒绝自动清理作为重解析点的 Cargo 构建目录：$targetRoot"
+    }
+    $resolvedTargetRoot = (Resolve-Path -LiteralPath $targetRoot).Path
+    Assert-ChildPath -Parent $tauriRoot -Child $resolvedTargetRoot
+    Remove-Item -LiteralPath $resolvedTargetRoot -Recurse -Force
+    Write-Host "已清理 Cargo 编译中间产物：$resolvedTargetRoot"
+}
+elseif ($KeepBuildArtifacts) {
+    Write-Host "已保留 Cargo 编译中间产物：$targetRoot"
+}
 
 Write-Host "便携目录：$stageRoot"
 Write-Host "发行包目录：$packageRoot"

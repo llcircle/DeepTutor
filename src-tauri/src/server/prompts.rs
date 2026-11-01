@@ -204,6 +204,33 @@ Create a complete single-file HTML lesson with scenes, captions, narration and p
     prompt
 }
 
+pub fn reading_playbook(language: &str) -> String {
+    let yaml = if language.to_ascii_lowercase().starts_with("zh") {
+        READING_ZH
+    } else {
+        READING_EN
+    };
+    yaml_text(yaml, &["playbook"]).unwrap_or_default()
+}
+
+pub fn reading_no_material(language: &str) -> String {
+    let yaml = if language.to_ascii_lowercase().starts_with("zh") {
+        READING_ZH
+    } else {
+        READING_EN
+    };
+    yaml_text(yaml, &["no_material"]).unwrap_or_default()
+}
+
+pub fn reading_material_missing(language: &str) -> String {
+    let yaml = if language.to_ascii_lowercase().starts_with("zh") {
+        READING_ZH
+    } else {
+        READING_EN
+    };
+    yaml_text(yaml, &["material_missing"]).unwrap_or_default()
+}
+
 fn yaml_text(raw: &str, keys: &[&str]) -> Option<String> {
     let value: Value = serde_yaml::from_str(raw).ok()?;
     let mut current = &value;

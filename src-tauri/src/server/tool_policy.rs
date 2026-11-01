@@ -84,6 +84,13 @@ pub fn compose(
     if has_sources {
         names.push("read_source".to_string());
     }
+    if super::reading::is_reading_turn(request) {
+        names.extend(
+            super::reading::tool_names()
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
+    }
     if has_memory {
         names.push("read_memory".to_string());
     }
