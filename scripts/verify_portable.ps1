@@ -277,6 +277,24 @@ if ($ZipPath) {
         if (Compare-Object -ReferenceObject $stageRelative -DifferenceObject $zipRelative) {
             throw "ZIP 与便携目录文件清单不一致。"
         }
+
+        foreach ($entry in $zipFiles) {
+            $relative = $entry.FullName.Replace('\', '/').Substring($zipPrefix.Length)
+            $stageFile = Join-Path $stageRootFull $relative.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+            $entryStream = $entry.Open()
+            $sha256 = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $entryHash = [System.BitConverter]::ToString($sha256.ComputeHash($entryStream)).Replace('-', '').ToLowerInvariant()
+                $stageHash = (Get-FileHash -LiteralPath $stageFile -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($entryHash -ne $stageHash) {
+                    throw "ZIP 与便携目录的文件内容不一致：$relative"
+                }
+            }
+            finally {
+                $entryStream.Dispose()
+                $sha256.Dispose()
+            }
+        }
     }
     finally {
         $archive.Dispose()
@@ -287,7 +305,7 @@ if ($ZipPath) {
     if ($hashContent -notmatch [regex]::Escape($hash)) {
         throw "ZIP 的 SHA-256 校验文件不匹配。"
     }
-    $report.Add("ZIP 一致性与 SHA-256：$($releaseFiles.Count) 个文件，通过")
+    $report.Add("ZIP 文件清单、逐文件内容及 SHA-256：$($releaseFiles.Count) 个文件，通过")
 }
 
 if ($SmokeTest) {

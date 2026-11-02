@@ -91,7 +91,16 @@ impl TurnEmitter {
         let seq = self
             .state
             .database
-            .append_turn_event(&self.turn_id, &event)?;
+            .append_turn_event(&self.turn_id, &event)
+            .map_err(|error| {
+                tracing::error!(
+                    turn_id = %self.turn_id,
+                    event_type,
+                    error = %error,
+                    "回合事件持久化失败"
+                );
+                error
+            })?;
         let mut persisted = event;
         persisted["seq"] = Value::from(seq);
         self.state.broadcast_turn_event(persisted.clone());
@@ -1131,8 +1140,16 @@ async fn run_turn(context: &mut TurnContext) {
             }
         }
     } else if !capability_failed {
-        for round in 0..MAX_TOOL_ROUNDS {
+        // 工具轮次耗尽后仍留一次不带工具的请求，将已有材料整理成最终回答。
+        for round in 0..=MAX_TOOL_ROUNDS {
+            let final_round = round == MAX_TOOL_ROUNDS;
             drain_queued_input(context);
+            if final_round {
+                context.provider_messages.push(json!({
+                    "role": "system",
+                    "content": "本轮工具调用次数已达到上限。请停止调用工具，依据已经获得的材料和工具结果直接给出最终回答；信息不足时明确说明已知结论与缺失信息，不要编造。"
+                }));
+            }
             match tool_policy::compose(
                 &context.state,
                 &context.request,
@@ -1191,12 +1208,16 @@ async fn run_turn(context: &mut TurnContext) {
             } else {
                 None
             };
-            let definitions = tools::definitions(
-                &context.capability,
-                &context.enabled_tools,
-                Some(&context.request),
-                &context.deferred_definitions,
-            );
+            let definitions = if final_round {
+                Vec::new()
+            } else {
+                tools::definitions(
+                    &context.capability,
+                    &context.enabled_tools,
+                    Some(&context.request),
+                    &context.deferred_definitions,
+                )
+            };
             let response = llm::stream_completion(
                 &context.state.client,
                 &context.llm,
@@ -1231,6 +1252,15 @@ async fn run_turn(context: &mut TurnContext) {
             final_content = response.content.trim().to_string();
 
             if response.tool_calls.is_empty() {
+                break;
+            }
+            if final_round {
+                failure = Some((
+                    "tool_round_limit".to_string(),
+                    "工具调用已达到上限，但模型仍未生成最终回答。请重试或缩小问题范围。"
+                        .to_string(),
+                    true,
+                ));
                 break;
             }
 
@@ -1327,6 +1357,9 @@ async fn run_turn(context: &mut TurnContext) {
                     "content": outcome.content
                 }));
                 if outcome.terminate_turn {
+                    if final_content.is_empty() && outcome.success {
+                        final_content = outcome.content.clone();
+                    }
                     terminal_tool = true;
                     break;
                 }
@@ -1346,7 +1379,15 @@ async fn run_turn(context: &mut TurnContext) {
         ));
     }
 
-    if status == "completed" && final_content.is_empty() {
+    if status == "completed" && failure.is_some() {
+        status = "failed";
+    }
+    if status == "completed"
+        && final_content.is_empty()
+        && context.capability_attachments.is_empty()
+        && context.tool_attachments.is_empty()
+        && context.capability_result.is_none()
+    {
         status = "failed";
         failure = Some((
             "empty_response".to_string(),
@@ -1378,6 +1419,12 @@ async fn run_turn(context: &mut TurnContext) {
     }
 
     if let Some((reason, message, retryable)) = &failure {
+        tracing::warn!(
+            turn_id = %context.turn_id,
+            error_code = %reason,
+            status,
+            "回合未能正常完成"
+        );
         if let Ok(event) = context.emitter.emit(
             "error",
             message,
@@ -3346,6 +3393,136 @@ mod tests {
             .get_messages("session-test")
             .expect("读取消息")
             .is_empty());
+    }
+
+    async fn wait_for_finished_turn(state: &AppState, turn_id: &str) -> Value {
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if !state.active_turns.lock().contains_key(turn_id) {
+                    return state.database.get_turn(turn_id).unwrap().unwrap();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("等待回合结束")
+    }
+
+    #[tokio::test]
+    async fn 工具达到上限后关闭工具并生成最终答案() {
+        let (state, _temporary) = test_state();
+        let requests = std::sync::Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured = requests.clone();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |axum::Json(body): axum::Json<Value>| {
+                let captured = captured.clone();
+                async move {
+                    captured.lock().push(body.clone());
+                    let response = if body.get("tools").is_some() {
+                        json!({"choices": [{"delta": {"tool_calls": [{
+                            "index": 0, "id": format!("call-{}", captured.lock().len()),
+                            "function": {"name": "load_tools", "arguments": "{\"names\":[]}"}
+                        }]}}]})
+                    } else {
+                        json!({"choices": [{"delta": {"content": "根据工具结果整理的最终答案"}}]})
+                    };
+                    (
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        format!("data: {response}\n\ndata: [DONE]\n\n"),
+                    )
+                }
+            }),
+        );
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        configure_mock_model(&state, format!("http://{address}/v1"));
+        let receipt = start_turn(
+            state.clone(),
+            json!({"content": "检查工具上限", "capability": "chat"}),
+        )
+        .await
+        .unwrap();
+        let turn_id = receipt["turn_id"].as_str().unwrap();
+        let turn = wait_for_finished_turn(&state, turn_id).await;
+        assert_eq!(turn["status"], "completed");
+        assert_eq!(turn["error_code"], "");
+        let requests = requests.lock();
+        assert_eq!(requests.len(), MAX_TOOL_ROUNDS + 1);
+        assert!(requests[MAX_TOOL_ROUNDS].get("tools").is_none());
+        assert_eq!(
+            requests[MAX_TOOL_ROUNDS]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .count(),
+            MAX_TOOL_ROUNDS
+        );
+        let events = state.database.get_turn_events(turn_id, 0).unwrap();
+        assert!(!events.iter().any(|event| event["type"] == "error"));
+        let messages = state
+            .database
+            .get_messages(receipt["session_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            messages.last().unwrap()["content"],
+            "根据工具结果整理的最终答案"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn 写入流事件失败不会标记完成也不会覆盖原始错误() {
+        let (state, _temporary) = test_state();
+        let (base_url, task) = start_mock_openai().await;
+        configure_mock_model(&state, base_url);
+        state
+            .database
+            .with_connection(|connection| {
+                connection
+                    .execute_batch(
+                        "CREATE TRIGGER reject_content BEFORE INSERT ON turn_events
+                 WHEN json_extract(NEW.event_json, '$.type') = 'content'
+                 BEGIN SELECT RAISE(ABORT, '测试注入：内容事件落库失败'); END;",
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        let receipt = start_turn(state.clone(), json!({"content": "验证落库失败"}))
+            .await
+            .unwrap();
+        let turn_id = receipt["turn_id"].as_str().unwrap();
+        let turn = wait_for_finished_turn(&state, turn_id).await;
+        assert_eq!(turn["status"], "failed");
+        assert_eq!(turn["error_code"], "event_persist_failed");
+        assert!(turn["error"].as_str().unwrap().contains("测试注入"));
+        let events = state.database.get_turn_events(turn_id, 0).unwrap();
+        assert!(!events.iter().any(|event| event["type"] == "result"));
+        let done = events.iter().find(|event| event["type"] == "done").unwrap();
+        assert_eq!(done["metadata"]["status"], "failed");
+        assert_eq!(done["metadata"]["error_code"], "event_persist_failed");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn 真正空响应仍然报告明确错误() {
+        let (state, _temporary) = test_state();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().fallback(|| async {
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+        });
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        configure_mock_model(&state, format!("http://{address}/v1"));
+        let receipt = start_turn(state.clone(), json!({"content": "验证空响应"}))
+            .await
+            .unwrap();
+        let turn = wait_for_finished_turn(&state, receipt["turn_id"].as_str().unwrap()).await;
+        assert_eq!(turn["status"], "failed");
+        assert_eq!(turn["error_code"], "empty_response");
+        task.abort();
     }
 
     #[tokio::test]

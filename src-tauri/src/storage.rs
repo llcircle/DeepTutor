@@ -1,12 +1,15 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use parking_lot::Mutex;
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct Database {
     path: Arc<PathBuf>,
+    event_write_gate: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,10 +35,19 @@ pub struct NewAttachment<'a> {
     pub metadata: &'a Value,
 }
 
+fn is_sqlite_busy_or_locked(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(details, _)
+            if matches!(details.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
+}
+
 impl Database {
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: Arc::new(path.as_ref().to_path_buf()),
+            event_write_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -341,14 +353,14 @@ impl Database {
     }
 
     fn connect(&self) -> Result<Connection, String> {
-        let connection = Connection::open(self.path.as_ref())
-            .map_err(|error| format!("无法打开 SQLite 数据库：{error}"))?;
-        connection
-            .busy_timeout(Duration::from_secs(5))
-            .map_err(|error| format!("无法设置 SQLite 忙等待：{error}"))?;
-        connection
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(|error| format!("无法启用 SQLite 外键：{error}"))?;
+        self.open_connection()
+            .map_err(|error| format!("无法打开或配置 SQLite 数据库：{error}"))
+    }
+
+    fn open_connection(&self) -> rusqlite::Result<Connection> {
+        let connection = Connection::open(self.path.as_ref())?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;")?;
         Ok(connection)
     }
 
@@ -931,7 +943,7 @@ impl Database {
     ) -> Result<Value, String> {
         let mut connection = self.connect()?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("无法开始提交保留事务：{error}"))?;
         let timestamp = now();
         let prior = transaction
@@ -1085,7 +1097,7 @@ impl Database {
         }
         let mut connection = self.connect()?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("无法开始提交替换事务：{error}"))?;
         let timestamp = now();
         let old = submission_row(&transaction, original_id)?;
@@ -1360,37 +1372,54 @@ impl Database {
     }
 
     pub fn append_turn_event(&self, turn_id: &str, event: &Value) -> Result<u64, String> {
-        let connection = self.connect()?;
-        let transaction = connection
-            .unchecked_transaction()
-            .map_err(|error| format!("无法开始事件事务：{error}"))?;
-        let seq: u64 = transaction
-            .query_row(
-                "SELECT COALESCE(MAX(last_seq), 0) + 1 FROM turns WHERE id = ?1",
-                params![turn_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("无法分配事件序号：{error}"))?;
+        // 同一数据库克隆的事件写入串行执行；其他连接的写入由 IMMEDIATE 事务协调。
+        let _gate = self.event_write_gate.lock();
+        const MAX_RETRIES: usize = 4;
+        for attempt in 0..=MAX_RETRIES {
+            match self.append_turn_event_once(turn_id, event) {
+                Ok(seq) => return Ok(seq),
+                Err(error) if is_sqlite_busy_or_locked(&error) && attempt < MAX_RETRIES => {
+                    let delay_ms = 20_u64.saturating_mul(1_u64 << attempt);
+                    tracing::warn!(
+                        turn_id = %turn_id,
+                        attempt = attempt + 1,
+                        delay_ms,
+                        error = %error,
+                        "SQLite 流事件写入遇到锁，准备重试"
+                    );
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+                Err(error) => {
+                    return Err(format!("无法持久化流事件：{error}"));
+                }
+            }
+        }
+        unreachable!("SQLite 流事件重试循环必须返回")
+    }
+
+    fn append_turn_event_once(&self, turn_id: &str, event: &Value) -> Result<u64, rusqlite::Error> {
+        let mut connection = self.open_connection()?;
+        // 先取得写锁再读取序号，避免 WAL 读快照升级写入时立即触发 SQLITE_BUSY_SNAPSHOT。
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let seq: u64 = transaction.query_row(
+            "SELECT last_seq + 1 FROM turns WHERE id = ?1",
+            params![turn_id],
+            |row| row.get(0),
+        )?;
         let mut stored_event = event.clone();
         if let Some(object) = stored_event.as_object_mut() {
             object.insert("seq".into(), Value::from(seq));
             object.insert("turn_id".into(), Value::String(turn_id.to_string()));
         }
-        transaction
-            .execute(
-                "INSERT INTO turn_events(turn_id, seq, event_json) VALUES(?1, ?2, ?3)",
-                params![turn_id, seq as i64, stored_event.to_string()],
-            )
-            .map_err(|error| format!("无法持久化流事件：{error}"))?;
-        transaction
-            .execute(
-                "UPDATE turns SET last_seq = ?2, updated_at = ?3 WHERE id = ?1",
-                params![turn_id, seq as i64, now()],
-            )
-            .map_err(|error| format!("无法更新回合事件序号：{error}"))?;
-        transaction
-            .commit()
-            .map_err(|error| format!("无法提交事件事务：{error}"))?;
+        transaction.execute(
+            "INSERT INTO turn_events(turn_id, seq, event_json) VALUES(?1, ?2, ?3)",
+            params![turn_id, seq as i64, stored_event.to_string()],
+        )?;
+        transaction.execute(
+            "UPDATE turns SET last_seq = ?2, updated_at = ?3 WHERE id = ?1",
+            params![turn_id, seq as i64, now()],
+        )?;
+        transaction.commit()?;
         Ok(seq)
     }
 
@@ -1768,6 +1797,112 @@ pub fn normalize_title(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 并发事件与其他写入保持连续序号且不丢失事件() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let database = Database::new(directory.path().join("events.sqlite3"));
+        database.initialize().expect("初始化");
+        database
+            .create_session("s", "并发测试", &json!({}), "")
+            .unwrap();
+        database.create_turn("t", "s", "chat").unwrap();
+        let barrier = std::sync::Barrier::new(7);
+        thread::scope(|scope| {
+            for worker in 0..6 {
+                let writer = if worker % 2 == 0 {
+                    database.clone()
+                } else {
+                    Database::new(database.path())
+                };
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    for index in 0..100 {
+                        writer
+                            .append_turn_event(
+                                "t",
+                                &json!({"type": "content", "worker": worker, "index": index}),
+                            )
+                            .expect("并发写入事件");
+                    }
+                });
+            }
+            barrier.wait();
+            for index in 0..100 {
+                database.set_setting("concurrent", &json!(index)).unwrap();
+                database
+                    .put_resource("concurrent", "entry", &json!({"index": index}))
+                    .unwrap();
+                database
+                    .update_turn_status("t", "running", "", "", false)
+                    .unwrap();
+                database
+                    .reserve_submission(
+                        &format!("concurrent-{index}"),
+                        "digest",
+                        "",
+                        Some("s"),
+                        "并发提交",
+                        &json!({}),
+                    )
+                    .expect("流事件写入期间仍能保留新提交");
+            }
+        });
+        let events = database.get_turn_events("t", 0).unwrap();
+        assert_eq!(events.len(), 600);
+        let mut identities = std::collections::HashSet::new();
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event["seq"], (index + 1) as u64);
+            assert!(identities.insert((event["worker"].as_u64(), event["index"].as_u64())));
+        }
+        assert_eq!(database.get_turn("t").unwrap().unwrap()["last_seq"], 600);
+        let connection = database.connect().unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn 事件事务等待其他连接释放写锁后成功() {
+        let directory = tempfile::tempdir().expect("临时目录");
+        let database = Database::new(directory.path().join("busy.sqlite3"));
+        database.initialize().unwrap();
+        database
+            .create_session("s", "锁等待测试", &json!({}), "")
+            .unwrap();
+        database.create_turn("t", "s", "chat").unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let writer = database.clone();
+        let holder = thread::spawn(move || {
+            let mut connection = writer.connect().unwrap();
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            transaction
+                .execute(
+                    "UPDATE turns SET updated_at = ?1 WHERE id = 't'",
+                    params![now()],
+                )
+                .unwrap();
+            sender.send(()).unwrap();
+            thread::sleep(Duration::from_millis(200));
+            transaction.commit().unwrap();
+        });
+        receiver.recv().unwrap();
+        assert_eq!(
+            database
+                .append_turn_event("t", &json!({"type": "content"}))
+                .unwrap(),
+            1
+        );
+        holder.join().unwrap();
+        assert!(database.append_turn_event("missing", &json!({})).is_err());
+        assert_eq!(database.get_turn_events("t", 0).unwrap().len(), 1);
+    }
 
     #[test]
     fn session_lifecycle_and_events_survive_reopen() {

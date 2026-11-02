@@ -284,6 +284,8 @@ npm --prefix web run build:desktop
 .\scripts\audit_openapi_routes.ps1
 .\scripts\build_portable.ps1
 .\scripts\verify_portable.ps1 -StageRoot artifacts\portable\DeepTutor -ZipPath artifacts\DeepTutor-1.7.0-portable-X64.zip -SmokeTest
+node scripts/verify_stream_runtime.mjs
+node scripts/verify_provider_routing.mjs
 ```
 
 开发运行：
@@ -303,12 +305,19 @@ Rust 测试目标不链接 GUI，避免 Windows 测试资源清单问题。构�
 
 `verify_portable.ps1` 解析 PE 头和导入表，要求 `DeepTutor.exe` 显式导入的
 `WebView2Loader.dll` 与 EXE、manifest 架构一致，并确认其余原生依赖由系统或
-发行目录提供。它还会比较目录与 ZIP 文件清单、校验 SHA-256、扫描禁入项。
+发行目录提供。它还会比较目录与 ZIP 文件清单及每个文件的内容哈希（包括
+EXE）、校验 ZIP 的 SHA-256、扫描禁入项。
 `-SmokeTest` 在隔离副本中启动 EXE，等待 Rust 服务就绪，并确认 SQLite、
 WebView2、日志、临时目录和 HOME 都创建在该副本内部。
 启动时会同时补齐 HOME 下的 Desktop、Documents、Downloads、Pictures、
 Music、Videos 和 Favorites，避免 Windows 文件选择框访问便携 USERPROFILE
 时弹出“位置不可用”。旧便携目录同样会自动补齐，已有用户文件保留。
+
+`verify_stream_runtime.mjs` 复制不含用户数据的发行载荷并启动最终 EXE，使用
+本地模拟网关验证工具上限后的最终回答、兼容流解析、并发长流与设置写入、
+SQLite 写锁等待、落库失败终态和重启事件重放。报告保存在
+`artifacts/stream-runtime-verification/stream-runtime-report.json`。开发验收可使用
+Node，但不会把它打入发行包，也不会读取用户真实凭据或请求外部模型。
 
 ## 发行审计
 

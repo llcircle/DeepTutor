@@ -121,3 +121,11 @@
 
 - 沉浸式阅读资料组的权威数据源是 `reading_workspace` API。不要用通用学习资料库的 `learningLibrary("reading")` 代替它；资料组页面、材料归属选择器和资料组计数必须读取同一工作区列表。
 - 回归测试应验证已创建的资料夹在资料组页可见、材料归属选择器可选，并确保页面不再请求旧的通用阅读集合。
+
+## 2026-11-02 21:47:07 +08:00 SQLite 流事件与工具循环验收
+- SQLite WAL 的读事务升级写入可能立即返回 BUSY_SNAPSHOT，单独增加 busy_timeout 无法解决。序号分配与插入必须处于 BEGIN IMMEDIATE 原子事务，避免先读取旧快照；同实例事件串行化加有限锁重试，独立数据库句柄仍由 SQLite 协调。提交幂等保留和替换同样属于先读后写事务，也应采用 IMMEDIATE。
+- 达到工具上限不能直接退出，也不能把探索文本充当答案。应追加一次不含 tools 的最终总结请求；若模型仍返回工具，明确报告 tool_round_limit，停止执行。
+- failure 应先决定终态，再检查空响应，避免 event_persist_failed 被 empty_response 覆盖或失败被记为 completed。原始错误记录不改写。
+- 兼容网关可能在 stream=true 时返回完整 JSON、正文数组、完整 message 快照或无换行末帧。解析应覆盖这些形式，去重快照并过滤不可见思考块；不要因兼容性处理改变用户网关地址。
+- verify_stream_runtime.mjs 用干净发行副本和本地模拟网关验证最终 EXE，包含每回合 4000 条思考事件的并发、设置保存、外部写锁、故障注入和重启重放；WebSocket 所有命令（包括 subscribe_turn）必须带 protocol_version=2.0。
+- 发行验证不能只比较 ZIP 与目录文件名，必须比较逐文件 SHA256，尤其 EXE；交付 ZIP 和 .sha256 后再清理 target。真实用户数据保持原样，验收报告保存在 artifacts 下。

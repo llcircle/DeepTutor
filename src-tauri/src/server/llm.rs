@@ -245,15 +245,15 @@ where
             .and_then(Value::as_array)
             .and_then(|choices| choices.first())
         else {
+            append_top_level_text(&mut result, &value, on_chunk);
             return Ok(true);
         };
         if let Some(delta) = choice.get("delta") {
-            if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                if !text.is_empty() {
-                    result.content.push_str(text);
-                    on_chunk(LlmChunk::Content(text.to_string()));
-                }
-            }
+            append_content_value(
+                &mut result,
+                delta.get("content").unwrap_or(&Value::Null),
+                on_chunk,
+            );
             for key in ["reasoning_content", "reasoning", "thinking"] {
                 if let Some(text) = delta.get(key).and_then(Value::as_str) {
                     if !text.is_empty() {
@@ -262,6 +262,13 @@ where
                     }
                     break;
                 }
+            }
+            if let Some(function) = delta.get("function_call") {
+                let call = calls.entry(0).or_default();
+                if let Some(name) = function.get("name").and_then(Value::as_str) {
+                    call.name.push_str(name);
+                }
+                append_tool_arguments(call, function.get("arguments"));
             }
             if let Some(tool_deltas) = delta.get("tool_calls").and_then(Value::as_array) {
                 for (position, tool_delta) in tool_deltas.iter().enumerate() {
@@ -280,12 +287,34 @@ where
                         if let Some(name) = function.get("name").and_then(Value::as_str) {
                             call.name.push_str(name);
                         }
-                        if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
-                            call.arguments.push_str(arguments);
-                        }
+                        append_tool_arguments(call, function.get("arguments"));
                     }
                 }
             }
+        }
+        if let Some(message) = choice.get("message") {
+            append_content_snapshot(
+                &mut result,
+                message.get("content").unwrap_or(&Value::Null),
+                on_chunk,
+            );
+            absorb_chat_message_tool_calls(message, &mut calls);
+            for key in ["reasoning_content", "reasoning", "thinking"] {
+                if let Some(text) = message.get(key).and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        result.reasoning.push_str(text);
+                        on_chunk(LlmChunk::Thinking(text.to_string()));
+                    }
+                    break;
+                }
+            }
+        }
+        if result.content.is_empty() {
+            append_content_value(
+                &mut result,
+                choice.get("text").unwrap_or(&Value::Null),
+                on_chunk,
+            );
         }
         Ok(true)
     })
@@ -393,8 +422,23 @@ where
                     call.arguments.push_str(text);
                 }
             }
-            "response.completed" => {
+            "response.completed" | "" => {
                 let response = value.get("response").unwrap_or(&value);
+                let text = response
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter(|item| {
+                                item.get("type").and_then(Value::as_str) == Some("message")
+                            })
+                            .map(|item| extract_text(&item["content"]))
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default();
+                append_content_snapshot(&mut result, &Value::String(text), on_chunk);
+                append_top_level_text(&mut result, response, on_chunk);
                 if let Some(usage) = response.get("usage").and_then(parse_openai_usage) {
                     result.usage.merge(&usage);
                     on_chunk(LlmChunk::Usage(usage));
@@ -580,6 +624,121 @@ where
     Ok(result)
 }
 
+fn append_content_value<F>(result: &mut LlmResponse, value: &Value, on_chunk: &mut F)
+where
+    F: FnMut(LlmChunk),
+{
+    let text = extract_text(value);
+    if text.is_empty() {
+        return;
+    }
+    result.content.push_str(&text);
+    on_chunk(LlmChunk::Content(text));
+}
+
+fn append_content_snapshot<F>(result: &mut LlmResponse, value: &Value, on_chunk: &mut F)
+where
+    F: FnMut(LlmChunk),
+{
+    let text = extract_text(value);
+    if let Some(suffix) = text.strip_prefix(&result.content) {
+        let suffix = suffix.to_string();
+        append_content_value(result, &Value::String(suffix), on_chunk);
+    }
+}
+
+fn append_top_level_text<F>(result: &mut LlmResponse, value: &Value, on_chunk: &mut F)
+where
+    F: FnMut(LlmChunk),
+{
+    if !result.content.is_empty() {
+        return;
+    }
+    for key in ["output_text", "content", "text"] {
+        if let Some(candidate) = value.get(key) {
+            let before = result.content.len();
+            append_content_value(result, candidate, on_chunk);
+            if result.content.len() > before {
+                break;
+            }
+        }
+    }
+}
+
+fn extract_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts.iter().map(extract_text).collect(),
+        Value::Object(object) => {
+            if object
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| !matches!(kind, "text" | "output_text" | "refusal"))
+            {
+                return String::new();
+            }
+            for key in ["text", "output_text", "content", "refusal", "value"] {
+                if let Some(value) = object.get(key) {
+                    let text = extract_text(value);
+                    if !text.is_empty() {
+                        return text;
+                    }
+                }
+            }
+            String::new()
+        }
+        _ => String::new(),
+    }
+}
+
+fn append_tool_arguments(call: &mut ToolCallAccumulator, value: Option<&Value>) {
+    let Some(value) = value else {
+        return;
+    };
+    match value {
+        Value::String(arguments) => call.arguments.push_str(arguments),
+        Value::Null => {}
+        _ => call.arguments.push_str(&value.to_string()),
+    }
+}
+
+fn absorb_chat_message_tool_calls(
+    message: &Value,
+    calls: &mut BTreeMap<usize, ToolCallAccumulator>,
+) {
+    if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
+        for (position, tool_call) in tool_calls.iter().enumerate() {
+            let index = tool_call
+                .get("index")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(position);
+            let call = calls.entry(index).or_default();
+            if let Some(id) = tool_call.get("id").and_then(Value::as_str) {
+                if !id.is_empty() {
+                    call.id = id.to_string();
+                }
+            }
+            let function = tool_call.get("function").unwrap_or(tool_call);
+            if let Some(name) = function.get("name").and_then(Value::as_str) {
+                call.name = name.to_string();
+            }
+            if call.arguments.is_empty() {
+                append_tool_arguments(call, function.get("arguments"));
+            }
+        }
+    }
+    if let Some(function) = message.get("function_call") {
+        let call = calls.entry(0).or_default();
+        if let Some(name) = function.get("name").and_then(Value::as_str) {
+            call.name = name.to_string();
+        }
+        if call.arguments.is_empty() {
+            append_tool_arguments(call, function.get("arguments"));
+        }
+    }
+}
+
 #[derive(Default)]
 struct ToolCallAccumulator {
     id: String,
@@ -657,31 +816,93 @@ where
 {
     let mut stream = response.bytes_stream();
     let mut buffer = Vec::<u8>::new();
+    let mut raw_body = Vec::<u8>::new();
+    let mut saw_sse_data = false;
+    let mut event_data = String::new();
+    const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
     while let Some(chunk) = tokio::select! {
         _ = cancel.cancelled() => return Err("回合已取消".to_string()),
         chunk = stream.next() => chunk,
     } {
         let chunk = chunk.map_err(|error| format!("读取模型流失败：{error}"))?;
+        if !saw_sse_data {
+            raw_body.extend_from_slice(&chunk);
+        }
         buffer.extend_from_slice(&chunk);
+        if buffer.len() + event_data.len() > MAX_FRAME_BYTES || raw_body.len() > MAX_FRAME_BYTES {
+            return Err("模型返回的单条消息超过 16 MiB 限制。".to_string());
+        }
         while let Some(newline) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=newline).collect();
             let line = String::from_utf8_lossy(&line);
             let line = line.trim_end_matches(['\r', '\n']);
-            let Some(data) = line.strip_prefix("data:") else {
-                continue;
-            };
-            if !on_data(data.trim_start())? {
+            if !consume_sse_line(line, &mut event_data, &mut saw_sse_data, &mut on_data)? {
                 return Ok(());
+            }
+            if saw_sse_data {
+                raw_body.clear();
             }
         }
     }
     if !buffer.is_empty() {
         let line = String::from_utf8_lossy(&buffer);
-        if let Some(data) = line.trim_end_matches(['\r', '\n']).strip_prefix("data:") {
-            on_data(data.trim_start())?;
+        if !consume_sse_line(
+            line.trim_end_matches('\r'),
+            &mut event_data,
+            &mut saw_sse_data,
+            &mut on_data,
+        )? {
+            return Ok(());
         }
     }
+    if !saw_sse_data && !raw_body.is_empty() {
+        let body = String::from_utf8_lossy(&raw_body);
+        let body = body.trim().trim_start_matches('\u{feff}');
+        if !body.is_empty() {
+            serde_json::from_str::<Value>(body)
+                .map_err(|_| "模型服务没有返回有效的 SSE 或 JSON 数据。".to_string())?;
+            on_data(body)?;
+        }
+    } else if !event_data.is_empty() {
+        on_data(&event_data)?;
+    }
     Ok(())
+}
+
+fn consume_sse_line<F>(
+    line: &str,
+    event_data: &mut String,
+    saw_sse_data: &mut bool,
+    on_data: &mut F,
+) -> Result<bool, String>
+where
+    F: FnMut(&str) -> Result<bool, String>,
+{
+    let line = line.trim_start_matches('\u{feff}');
+    if line.is_empty() {
+        if event_data.is_empty() {
+            return Ok(true);
+        }
+        let data = std::mem::take(event_data);
+        return on_data(&data);
+    }
+    if let Some(data) = line.strip_prefix("data:") {
+        *saw_sse_data = true;
+        // 部分兼容网关省略事件之间的空行；完整 JSON 仍按独立事件处理。
+        if !event_data.is_empty()
+            && (event_data.trim() == "[DONE]" || serde_json::from_str::<Value>(event_data).is_ok())
+        {
+            let previous = std::mem::take(event_data);
+            if !on_data(&previous)? {
+                return Ok(false);
+            }
+        }
+        if !event_data.is_empty() {
+            event_data.push('\n');
+        }
+        event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
+    }
+    Ok(true)
 }
 
 fn authorized_request(
@@ -1020,6 +1241,128 @@ fn call_id_missing(_index: usize, _item: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn mock_completion(body: String, format: ApiFormat) -> (LlmResponse, String) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = axum::Router::new().fallback(move || {
+            let body = body.clone();
+            async move { body }
+        });
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let settings = LlmSettings {
+            provider: "local-test".to_string(),
+            base_url: format!("http://{address}/api/v3"),
+            api_key: String::new(),
+            model: "test-model".to_string(),
+            api_format: format,
+            headers: Vec::new(),
+        };
+        let mut visible = String::new();
+        let response = stream_completion(
+            &Client::builder().no_proxy().build().unwrap(),
+            &settings,
+            &[json!({"role": "user", "content": "测试"})],
+            &[],
+            None,
+            &CancellationToken::new(),
+            |chunk| {
+                if let LlmChunk::Content(text) = chunk {
+                    visible.push_str(&text)
+                }
+            },
+        )
+        .await;
+        task.abort();
+        (response.expect("解析本地模拟模型响应"), visible)
+    }
+
+    #[tokio::test]
+    async fn 网关完整响应支持字符串数组及对象参数() {
+        let body = json!({
+            "choices": [{"message": {
+                "content": [
+                    {"type": "text", "text": "中文"},
+                    {"type": "output_text", "text": {"value": "答案"}},
+                    {"type": "thinking", "text": "不应显示推理块"}
+                ],
+                "tool_calls": [{"id": "call-1", "function": {"name": "read_material", "arguments": {"page": 2}}}]
+            }}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+        });
+        let (response, visible) = mock_completion(
+            serde_json::to_string_pretty(&body).unwrap(),
+            ApiFormat::OpenAiChat,
+        )
+        .await;
+        assert_eq!(response.content, "中文答案");
+        assert_eq!(visible, response.content);
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "read_material");
+        assert_eq!(response.tool_calls[0].arguments, json!({"page": 2}));
+        assert_eq!(response.usage.total_tokens, 8);
+    }
+
+    #[tokio::test]
+    async fn 流式数组与结束快照不会丢字或重复显示() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"中文\"}]}}]}\r\n\r\n",
+            "data: {\"choices\":[{\"message\":{\"content\":\"中文答案\"}}]}\r\n\r\n",
+            "data: [DONE]"
+        );
+        let (response, visible) = mock_completion(body.to_string(), ApiFormat::OpenAiChat).await;
+        assert_eq!(response.content, "中文答案");
+        assert_eq!(visible, "中文答案");
+    }
+
+    #[tokio::test]
+    async fn 多行事件与无换行末尾事件均可解析() {
+        let body = concat!(
+            ": 保活\r\n",
+            "event: message\r\n",
+            "data: {\"choices\":\r\n",
+            "data: [{\"delta\":{\"content\":\"多行\"}}]}\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"完整\"}}]}"
+        );
+        let (response, visible) = mock_completion(body.to_string(), ApiFormat::OpenAiChat).await;
+        assert_eq!(response.content, "多行完整");
+        assert_eq!(visible, response.content);
+        let (response, _) = mock_completion(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"单条末帧\"}}]}".to_string(),
+            ApiFormat::OpenAiChat,
+        )
+        .await;
+        assert_eq!(response.content, "单条末帧");
+    }
+
+    #[tokio::test]
+    async fn 工具增量与完整快照不会重复累加参数() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"read_\",\"arguments\":\"{\\\"page\\\":\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"material\",\"arguments\":\"2}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"c1\",\"function\":{\"name\":\"read_material\",\"arguments\":\"{\\\"page\\\":2}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (response, visible) = mock_completion(body.to_string(), ApiFormat::OpenAiChat).await;
+        assert!(visible.is_empty());
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "read_material");
+        assert_eq!(response.tool_calls[0].arguments, json!({"page": 2}));
+    }
+
+    #[tokio::test]
+    async fn Responses完整消息保留所有正文块() {
+        let body = json!({"output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "第一段"}]},
+            {"type": "message", "content": [{"type": "output_text", "text": "第二段"}]}
+        ]});
+        let (response, visible) =
+            mock_completion(body.to_string(), ApiFormat::OpenAiResponses).await;
+        assert_eq!(response.content, "第一段第二段");
+        assert_eq!(visible, response.content);
+    }
 
     #[test]
     fn endpoint_keeps_full_provider_paths() {
