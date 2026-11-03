@@ -177,3 +177,9 @@
 - 交付：更新 artifacts/portable/DeepTutor/DeepTutor.exe、artifacts/DeepTutor-1.7.0-portable-X64.zip 及 .sha256；890 个载荷文件逐文件哈希、PE 依赖及启动冒烟验证通过；src-tauri/target 已自动清理。
 - 数据保护：验收使用独立载荷和本地模拟网关，没有调用用户真实密钥；现有 data/deeptutor.sqlite3 构建前后 SHA256 均为 23b0efa7830cd82f06fc4246ba54996ef24cab5b179e7ba74e4b383948b8b1f5。
 - 可用状态：已通过本地自动化与最终 EXE 验收；没有对真实外部模型进行长期在线压测。分支 codex/fix-stream-runtime，本轮只本地提交、不推送。
+
+
+## 2026-11-03 08:57:16 +08:00 核对当前 OCR 实现
+- 只读检查 PDF 导入和 OCR 源码及当前便携数据库的文档解析设置；没有修改用户配置、程序代码或发行包。
+- 结论：沉浸式阅读 PDF 优先读取文本层，无文本页面使用 Windows.Media.Ocr.OcrEngine，通过 TryCreateFromUserProfileLanguages 创建系统本地识别引擎；不使用用户配置的聊天模型，PDF 阅读路径不经过通用解析器选择。
+- 当前主库没有 document_parsing 设置记录，通用文档解析采用 text_only 默认值。可用状态：沿用上一轮已验收 EXE，本轮为源码核对，无需重编译。
