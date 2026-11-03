@@ -2,6 +2,7 @@
 import { useTranslation } from "react-i18next";
 import { ModelsWorkspace } from "@/components/settings/ModelsWorkspace";
 import { SettingsPageHeader } from "@/components/settings/shared";
+import { ReadingRetrievalSettings } from "@/components/reading/ReadingRetrievalSettings";
 export default function EmbeddingSettingsPage() {
   const { t } = useTranslation();
   return (
@@ -13,6 +14,7 @@ export default function EmbeddingSettingsPage() {
         )}
       />
       <ModelsWorkspace page="embedding" />
+      <div className="mt-6"><ReadingRetrievalSettings /></div>
     </div>
   );
 }

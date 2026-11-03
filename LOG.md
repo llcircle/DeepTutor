@@ -212,3 +212,17 @@
 - 边界：沉浸式阅读依赖带定位的全文检索，读取长期记忆为读取 Markdown；二者本身不调用向量模型。PageIndex 使用推理检索；外接知识库的向量化由对应服务负责，不能视为使用客户端配置的模型。
 - Rust 差距：当前真正的向量 HTTP 请求仅在 provider_probe.rs 的连接测试；tools.rs 的 rag_search 和 memory_search 调用 text_match_score，尚未实现官方知识库文档向量化与查询向量检索。
 - 可用性：仅追加日志和经验；运行代码、EXE、ZIP、用户数据未变；未重复构建或运行上轮已通过的测试。
+## 2026-11-03 22:58:23 +08:00 沉浸式阅读混合检索与 OCR 人工校正交付
+
+- 分支：codex/reading-hybrid-ocr；基线提交：3bf259a6。本轮代码状态：可用，正式 EXE 与便携 ZIP 已构建并验收；仅本地提交，不推送。
+- 完成页级定位、页与段落混合向量检索及关键词兜底。向量默认关闭，首次明确确认材料文本与查询会发送至配置的向量服务；复用关联提供方地址，支持自定义网关及原生 Ollama/Cohere 路径，网络故障有限重试并降级。
+- 完成对话看图依据绑定、OCR 校正建议、逐页编辑与确认/拒绝。保留原 PDF、原图、原始 OCR、修改前文本、模型建议、用户最终文本、实际模型配置与 ID、提示词版本、时间及自报置信度。模型不能自动应用建议。
+- 用户确认后，在同一 SQLite 事务内提升材料版本、仅保存变化页、失效该页向量并重新校验旧引用/标注；原始 OCR 元数据也只保存基线一次。只有修改页重新嵌入，旧引用无法唯一重定位时展示历史与当前文本供人工核对。
+- 增加阅读索引设置、进度与删除入口，逐页审核界面、版本引用核对、新增接口、开发文档和最终 EXE 隔离验收脚本；第 121 页及以后可按需生成原始页图，不重复执行 OCR。
+- 源码检查：Rust 186/186；Vitest 200 文件、1008/1008；Node 1321/1321；最后 Hook 调整后相关 2 文件 6 测试通过；typecheck、架构依赖、契约、i18n 检查通过；目标 ESLint 0 错误，37 条中文 JSX 字面量提示；路由审计缺失 0；git diff --check 通过。
+- 最终 EXE 阅读验收 10 组全部通过：121 页实际 PDF；停留第 100 页仍向真实多模态请求注入第一页匹配；真实界面编辑确认；只有第一页重新向量化，其他 120 页向量逐字节不变；原件/原 OCR/历史保留；旧引用人工核对；503 重试降级；重启持久化；删除索引；无模型关键词可用。视觉与向量均使用本地模拟服务，只证明工程流程，不代表真实模型的 OCR 识别准确率。
+- 最终 EXE 回归全部通过：便携启动冒烟、PDF 导入、37 个设置页面、提供方自定义地址和流式对话。并发流式验收持久化 16355 个事件，重启重放及数据库完整性通过。所有成功报告均与发行 EXE SHA256 一致。
+- 交付 EXE：artifacts/portable/DeepTutor/DeepTutor.exe；SHA256：5d2b0bdf57090a623fbcbedc7da75c8f92d26f80de5b0a822b62ae2d406e8916。
+- 交付便携 ZIP：artifacts/DeepTutor-1.7.0-portable-X64.zip 及对应 .sha256；ZIP SHA256：9982cd7be158d04010a5c5c5849d876b785f964f256e238298c2ef4d0b66b917。verify_portable.ps1 验证 892 个文件逐文件内容、X64 PE、31 项导入依赖及禁入载荷 0，通过。
+- 统一 build_portable.ps1 完成打包并已自动删除 src-tauri/target。真实用户 data/cache/temp/logs/home 保留；data/deeptutor.sqlite3 与构建前 SHA256 相同（50C746F00275B4ABC3BB13D30B26D0E3F76AF4C0FDF78B282E78D5EE90AF431E）。所有测试使用隔离副本，验收 EXE 进程均已退出。
+- 验收报告：artifacts/reading-hybrid-verification/reading-hybrid-report.json；其余报告位于 pdf-verification、settings-runtime-verification、provider-verification、stream-runtime-verification。已移除本次早期验收脚本多模态正文读取不完整产生的旧失败报告。

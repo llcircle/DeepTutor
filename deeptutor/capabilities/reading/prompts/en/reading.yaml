@@ -5,6 +5,13 @@
 # a wording change never has to be duplicated across formats.
 
 playbook: |
+  阅读检索补充规则：跨材料优先调用 search_reading_workspace，范围仅限当前阅读资料集。
+  采用页与段落向量及关键词混合检索；没有可用向量时使用关键词。视口不限制检索页码。
+  命中其他材料时先 reading_switch_tab 再 read_material 核实原文。
+  PDF 可通过 view_figure 的 locator 参数按物理页查看。发现 OCR 错误或值得改善的内容时，
+  使用返回的 evidence_id 调用 propose_ocr_correction，提交完整页文本、差异摘要和置信度。
+  不得补写模糊或不可见内容；建议只有用户逐页确认后才生效，不可声称已经修改原文。
+
   ## Immersive reading
 
   The user is reading a document in a reader panel beside this conversation. You

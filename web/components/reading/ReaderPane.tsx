@@ -49,6 +49,10 @@ import {
   type SelectionPayload,
 } from "./PdfDocumentView";
 import { ReadingExtensionBar } from "./ReadingExtensionBar";
+import { ReadingOcrReview } from "./ReadingOcrReview";
+import { ReadingRetrievalSettings } from "./ReadingRetrievalSettings";
+import { getReadingTurnState } from "@/lib/reading-turn-state";
+import { resolveReadingReference, type ReferenceResolution } from "@/lib/reading-retrieval-api";
 import {
   useReadingActions,
   type ReadingActionEntry,
@@ -243,6 +247,8 @@ export function ReaderPane({
   const [autoJump, setAutoJump] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [currentLocator, setCurrentLocator] = useState(1);
+  const [showRetrievalSettings, setShowRetrievalSettings] = useState(false);
+  const [oldReference, setOldReference] = useState<(ReferenceResolution & { material: MaterialDetail }) | null>(null);
   const [epubPosition, setEpubPosition] = useState<{
     materialId: string; percentage: number | null;
   } | null>(null);
@@ -601,10 +607,11 @@ export function ReaderPane({
             target.materialRevision &&
             candidate.revision !== target.materialRevision
           ) {
-            setError(
-              "This citation points to an older material revision that is not available in the reader.",
-            );
-            return true;
+            const resolved = await resolveReadingReference(candidate.material_id, target.materialRevision, target.locator);
+            if (resolved.resolution !== "resolved") {
+              setOldReference({ ...resolved, material: candidate });
+              return true;
+            }
           }
           const entry = locationEntry(candidate, target.locator);
           await openHistoryEntry(entry, "push", false, candidate);
@@ -620,18 +627,24 @@ export function ReaderPane({
         target.materialRevision &&
         material?.revision !== target.materialRevision
       ) {
-        setError(
-          "This citation points to an older material revision that is not available in the reader.",
-        );
-        return true;
+        try {
+          if (!material) return true;
+          const resolved = await resolveReadingReference(material.material_id, target.materialRevision, target.locator);
+          if (resolved.resolution !== "resolved") {
+            setOldReference({ ...resolved, material });
+            return true;
+          }
+        } catch (caught) {
+          setError(caught instanceof Error ? caught.message : "无法校验旧版引用。");
+          return true;
+        }
       }
       rememberExplicitLocation(target.locator);
       requestJump(target.locator);
       return true;
     },
     [
-      material?.material_id,
-      material?.revision,
+      material,
       openHistoryEntry,
       rememberExplicitLocation,
       requestJump,
@@ -1228,6 +1241,43 @@ export function ReaderPane({
         <div role="status" className="border-b border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-[11.5px] text-[var(--muted-foreground)]">
           {material.ocr_warning}
         </div>
+      )}
+
+      {oldReference && (
+        <section role="dialog" aria-label="旧版引用校验" className="max-h-[45vh] shrink-0 overflow-auto border-b border-[var(--border)] p-3 text-xs">
+          <div className="flex justify-between gap-3">
+            <strong>此引用基于旧版文本，需重新核验</strong>
+            <button type="button" onClick={() => setOldReference(null)}>关闭</button>
+          </div>
+          <p className="my-2">第 {oldReference.locator} 页 · 版本 {oldReference.revision} → {oldReference.current_revision}。已保留旧版原文，当前无法唯一确认引用位置。</p>
+          <details open><summary>引用时的原文</summary><pre className="whitespace-pre-wrap">{oldReference.old_text}</pre></details>
+          <details><summary>当前原文</summary><pre className="whitespace-pre-wrap">{oldReference.current_text}</pre></details>
+          <button type="button" className="mt-2" onClick={() => {
+            const reference = oldReference;
+            void openHistoryEntry(locationEntry(reference.material, reference.locator), "push", false, reference.material)
+              .then(() => { requestJump(reference.locator); setOldReference(null); });
+          }}>打开当前页，手动核对</button>
+        </section>
+      )}
+      {material && (
+        <details className="shrink-0 border-b border-[var(--border)] px-3 py-2 text-xs"
+          onToggle={event => setShowRetrievalSettings(event.currentTarget.open)}>
+          <summary className="cursor-pointer">阅读检索设置与索引状态</summary>
+          {showRetrievalSettings && <div className="mt-2">
+            <ReadingRetrievalSettings workspaceId={getReadingTurnState().workspaceId} />
+          </div>}
+        </details>
+      )}
+      {material?.render_mode === "pdf" && (
+        <ReadingOcrReview key={material.material_id} materialId={material.material_id}
+          revision={material.revision ?? 1} locator={currentLocator}
+          onJump={locator => { rememberExplicitLocation(locator); requestJump(locator); }}
+          onApplied={async () => {
+            const locator = currentLocator;
+            await openMaterial(material.material_id);
+            requestJump(locator);
+          }}
+        />
       )}
 
       {material && (

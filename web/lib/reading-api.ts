@@ -124,7 +124,7 @@ export interface AnnotationItem {
    * migration marks rows "unresolved" or "ambiguous" when the stored quote
    * no longer identifies exactly one passage in the new text.
    */
-  resolution?: "resolved" | "unresolved" | "ambiguous";
+  resolution?: "resolved" | "unresolved" | "ambiguous" | "stale";
   /** "user" or "assistant" — the model can annotate too. */
   author: string;
   created_at: number;

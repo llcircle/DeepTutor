@@ -5302,7 +5302,7 @@ mod tests {
             .filter_map(|definition| definition.pointer("/function/name").and_then(Value::as_str))
             .collect::<Vec<_>>();
 
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), super::super::reading::tool_names().len());
         for name in super::super::reading::tool_names() {
             assert!(names.contains(name), "缺少阅读工具：{name}");
         }

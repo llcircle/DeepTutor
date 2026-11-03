@@ -6,6 +6,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+#[path = "storage_reading.rs"]
+mod reading;
+
 #[derive(Clone, Debug)]
 pub struct Database {
     path: Arc<PathBuf>,
@@ -351,10 +354,11 @@ impl Database {
             )
             .map_err(|error| format!("无法初始化 SQLite 数据库：{error}"))?;
         self.seed_defaults(&connection)?;
+        reading::initialize(&connection)?;
         Ok(())
     }
 
-    fn connect(&self) -> Result<Connection, String> {
+    pub(crate) fn connect(&self) -> Result<Connection, String> {
         self.open_connection()
             .map_err(|error| format!("无法打开或配置 SQLite 数据库：{error}"))
     }

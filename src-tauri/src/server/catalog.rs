@@ -330,7 +330,12 @@ pub fn resolve_profile_provider(
     Ok(Value::Object(resolved))
 }
 
-fn provider_endpoint(url: &str, source_service: &str, service: &str, binding: &str) -> String {
+pub(super) fn provider_endpoint(
+    url: &str,
+    source_service: &str,
+    service: &str,
+    binding: &str,
+) -> String {
     if service == source_service
         || (matches!(service, "llm" | "task") && matches!(source_service, "llm" | "task"))
     {

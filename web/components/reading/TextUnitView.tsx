@@ -307,7 +307,7 @@ export function TextUnitView({
         });
         annotator = instance;
         const rows = annotations
-          .filter((annotation) => annotation.locator === locator)
+          .filter((annotation) => annotation.locator === locator && (!annotation.resolution || annotation.resolution === "resolved"))
           .map((annotation) =>
             toRecogitoTextAnnotation(annotation, article.textContent ?? ""),
           )

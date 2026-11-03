@@ -165,7 +165,7 @@ export function AnnotationList({
                             {t("Citation")}
                           </span>
                         )}
-                        {annotation.resolution === "unresolved" && (
+                        {(annotation.resolution === "unresolved" || annotation.resolution === "stale") && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-[color-mix(in_srgb,var(--destructive)_8%,transparent)] px-1.5 py-[1px] text-[10px] font-medium text-[var(--destructive)]">
                             <AlertCircle size={9} />
                             {t("Not found")}

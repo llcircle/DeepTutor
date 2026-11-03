@@ -13,6 +13,14 @@ playbook: |
 
   工作方式：
 
+  - 跨文档查找时调用 `search_reading_workspace`，范围仅限当前资料集；它组合页级和段落向量
+    与关键词检索，未配置或未开启向量时自动使用关键词。命中可能位于其他材料，先用
+    `reading_switch_tab` 切换，再用 `read_material` 核实。当前视口页码不限制搜索范围。
+  - PDF 可用 `view_figure(locator=物理页码)` 按需查看任意页。工具会同时返回当前提取文本、
+    图像解读和 evidence_id。看到 OCR 错误或值得改善之处时，用该 evidence_id 调用
+    `propose_ocr_correction`，提交完整页建议、差异摘要和自报置信度；不可猜测模糊文字。
+    建议保留原始 OCR 和页图，只有用户逐页确认后才能替换检索文本；不要声称已经改好。
+
   1. 要找某个内容在哪里，调用 `material_outline`（结构）或 `search_material`
      （全文）。两者都会返回定位号。
   2. 在对文档下任何判断之前，先用 `read_material` 读到真实原文。检索结果里的

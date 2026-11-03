@@ -300,7 +300,8 @@ pub async fn start_turn(state: AppState, request: Value) -> Result<Value, String
         &content,
         &language,
         &source_manifest,
-    )?;
+    )
+    .await?;
 
     let persist_user = request
         .get("persist_user_message")
@@ -2349,7 +2350,7 @@ fn ensure_session(
     Ok((session_id, true))
 }
 
-pub(super) fn build_provider_messages(
+pub(super) async fn build_provider_messages(
     state: &AppState,
     request: &Value,
     session_id: &str,
@@ -2382,7 +2383,8 @@ pub(super) fn build_provider_messages(
         content,
         language,
         source_manifest,
-    )?;
+    )
+    .await?;
     let isolated_context = request
         .get("isolated_context")
         .and_then(Value::as_bool)
@@ -2547,7 +2549,7 @@ fn provider_content_text_len(content: &Value) -> usize {
     }
 }
 
-fn build_turn_context(
+async fn build_turn_context(
     state: &AppState,
     request: &Value,
     session_id: &str,
@@ -2556,7 +2558,7 @@ fn build_turn_context(
     source_manifest: &str,
 ) -> Result<String, String> {
     let mut parts = Vec::new();
-    if let Some(reading) = super::reading::turn_context(state, request, content, language)? {
+    if let Some(reading) = super::reading::turn_context(state, request, content, language).await? {
         if !reading.trim().is_empty() {
             parts.push(reading);
         }
@@ -2943,6 +2945,28 @@ pub(super) fn resolve_llm_settings(
         .database
         .get_setting("catalog")?
         .unwrap_or_else(|| json!({}));
+    let (profile, model) = resolve_llm_catalog_selection(&catalog, request)?;
+    let mut settings = super::provider_probe::llm_settings(&profile, &model)?;
+    let capability = request
+        .get("capability")
+        .and_then(Value::as_str)
+        .unwrap_or("chat");
+    let block = super::settings_contracts::capability_block(state, capability)
+        .map_err(|error| format!("无法读取能力设置：{error:?}"))?;
+    settings.temperature = block["temperature"].as_f64();
+    settings.max_tokens = block["max_tokens"].as_u64().or_else(|| {
+        block
+            .pointer("/stage_budgets/responding")
+            .and_then(Value::as_u64)
+    });
+    Ok(settings)
+}
+
+/// 统一解析本回合实际选择，供模型请求与 OCR 审核来源记录共用。
+pub(super) fn resolve_llm_catalog_selection(
+    catalog: &Value,
+    request: &Value,
+) -> Result<(Value, Value), String> {
     let service = catalog
         .pointer("/services/llm")
         .ok_or_else(|| "尚未配置语言模型。请先打开设置 → 语言模型添加服务。".to_string())?;
@@ -2997,21 +3021,8 @@ pub(super) fn resolve_llm_settings(
         })
         .or_else(|| models.first())
         .ok_or_else(|| "当前模型服务没有配置模型。".to_string())?;
-    let profile = super::catalog::resolve_profile_provider(&catalog, "llm", profile, Some(model))?;
-    let mut settings = super::provider_probe::llm_settings(&profile, model)?;
-    let capability = request
-        .get("capability")
-        .and_then(Value::as_str)
-        .unwrap_or("chat");
-    let block = super::settings_contracts::capability_block(state, capability)
-        .map_err(|error| format!("无法读取能力设置：{error:?}"))?;
-    settings.temperature = block["temperature"].as_f64();
-    settings.max_tokens = block["max_tokens"].as_u64().or_else(|| {
-        block
-            .pointer("/stage_budgets/responding")
-            .and_then(Value::as_u64)
-    });
-    Ok(settings)
+    let profile = super::catalog::resolve_profile_provider(catalog, "llm", profile, Some(model))?;
+    Ok((profile, model.clone()))
 }
 
 fn enabled_tools(state: &AppState, request: &Value) -> Result<Vec<String>, String> {

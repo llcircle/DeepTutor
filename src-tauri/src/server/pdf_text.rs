@@ -62,6 +62,16 @@ fn extract_inner(
     for text in &mut pages {
         *text = text.replace(['\u{c}', '\0'], "").trim().to_string();
     }
+    let mut page_sources = pages
+        .iter()
+        .map(|text| {
+            if text.is_empty() {
+                "unavailable"
+            } else {
+                "embedded"
+            }
+        })
+        .collect::<Vec<_>>();
 
     let mut recognized = 0usize;
     let mut warning = String::new();
@@ -135,6 +145,7 @@ fn extract_inner(
             match result {
                 Ok(Ok(value)) if !value.trim().is_empty() => {
                     *text = value.trim().to_string();
+                    page_sources[index] = "windows_ocr";
                     recognized += 1;
                 }
                 Ok(Err(error)) if warning.is_empty() => warning = error,
@@ -176,6 +187,7 @@ fn extract_inner(
             "parser": if recognized > 0 { "windows-ocr" } else { "pdf-extract" },
             "page_count": page_count,
             "page_texts": pages,
+            "page_sources": page_sources,
             "ocr_page_count": recognized,
             "empty_page_count": empty_pages,
             "text_status": status,
@@ -186,6 +198,59 @@ fn extract_inner(
             "title": title
         }),
     })
+}
+
+/// 按物理页惰性生成图片，补齐导入预览数量限制后的页面；不再次运行 OCR。
+pub(super) async fn render_page(
+    raw: PathBuf,
+    output: PathBuf,
+    locator: usize,
+) -> Result<(), String> {
+    let permit = PDF_WORKERS
+        .acquire()
+        .await
+        .map_err(|_| "PDF 服务已关闭。".to_string())?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        catch_unwind(AssertUnwindSafe(|| {
+            let bytes = std::fs::read(&raw).map_err(|e| format!("无法读取原始 PDF：{e}"))?;
+            let pdf = Pdf::new(bytes).map_err(|e| format!("无法打开 PDF：{e:?}"))?;
+            let page = locator
+                .checked_sub(1)
+                .and_then(|i| pdf.pages().get(i))
+                .ok_or_else(|| "PDF 物理页码无效。".to_string())?;
+            let (width, height) = page.render_dimensions();
+            if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+                return Err("PDF 页面尺寸无效。".to_string());
+            }
+            let scale = (1600.0 / width.max(height)).min(3.0);
+            let pixmap = render(
+                page,
+                &InterpreterSettings::default(),
+                &RenderSettings {
+                    x_scale: scale,
+                    y_scale: scale,
+                    bg_color: pdf_render::vello_cpu::color::palette::css::WHITE,
+                    ..Default::default()
+                },
+            );
+            save_page_image(
+                output.parent().ok_or("页面目录无效。")?,
+                output
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .ok_or("页面文件名无效。")?,
+                pixmap.width() as u32,
+                pixmap.height() as u32,
+                pixmap.data_as_u8_slice(),
+                20 * 1024 * 1024,
+            )?;
+            Ok(())
+        }))
+        .map_err(|_| "PDF 页面渲染失败，原文件可能损坏。".to_string())?
+    })
+    .await
+    .map_err(|e| format!("页面渲染任务失败：{e}"))?
 }
 
 fn save_page_image(
