@@ -183,3 +183,23 @@
 - 只读检查 PDF 导入和 OCR 源码及当前便携数据库的文档解析设置；没有修改用户配置、程序代码或发行包。
 - 结论：沉浸式阅读 PDF 优先读取文本层，无文本页面使用 Windows.Media.Ocr.OcrEngine，通过 TryCreateFromUserProfileLanguages 创建系统本地识别引擎；不使用用户配置的聊天模型，PDF 阅读路径不经过通用解析器选择。
 - 当前主库没有 document_parsing 设置记录，通用文档解析采用 text_only 默认值。可用状态：沿用上一轮已验收 EXE，本轮为源码核对，无需重编译。
+
+## 2026-11-03 10:59:44 +08:00 — 修复 Rust 桌面设置契约与真实用量统计
+- 分支：codex/fix-settings-contracts；当前代码可用，正式发行版首轮验收全部通过。本轮不推送。
+- 根因：迁移后的 Rust 设置接口存在空对象、裸配置和不完整 DTO，前端读取 trace_count、backend_port、enabled_verified、profiles 时崩溃；用量接口未汇总真实持久化消息。
+- 修复：补齐对话、附件、能力、网络和运行状态契约，读取旧版局部配置时补默认值，写入时校验类型和范围；前端增加接口边界校验及模型目录归一化；修正超时和语音自动播放设置的保存位置。
+- 运行：能力模型参数、轮次和附件预算进入 Rust 执行路径；网络展示真实本地端口，不再提供无效的服务部署编辑。
+- 统计：按年份和 IANA 时区汇总已保存的 token、调用数和活动；兼容旧事件，result/done 快照只计一次，后续问题按自身消息关联；不估算缺失 token、缓存率、TTFT 或 TPS。
+- 向量核查：仅嵌入模型连接测试及系统对应测试请求 embedding 接口。知识库和记忆检索仍为本地词法匹配，沉浸式阅读不调用向量模型；已在 DESKTOP_TAURI.md 写明边界。
+- 测试：Rust 180/180、Vitest 1004/1004（199 个文件）、Node 1321/1321；最新类型检查与前端构建通过；OpenAPI 路由契约缺失 0。
+- 正式 EXE：37 个设置入口页面异常和 HTTP 错误均为 0；设置应用、跨页草稿、重启持久化、本地模拟模型调用用量、历史匿名用量恢复均通过。
+- 压力与路由：4 个并发回合持久化 16000 条推理和 256 条正文，同时 30 次设置保存；写锁等待、错误注入、重启重放、SQLite 完整性、自定义模型网关路由均通过。
+- 便携包：使用 build_portable.ps1 更新 EXE、ZIP 及 .sha256；verify_portable.ps1 验证 X64 PE、31 项导入依赖、891 个 ZIP 文件内容和启动，禁入运行时 0。已清理整个 src-tauri/target。
+- 用户数据：保留 data/cache/temp/logs/home，原数据库 SHA-256 未变：96cf6400e43973496492337b732099e6086a0f53e16117f49f7d1edb6d9c9f8e。全部验收在隔离目录和本地模拟网关运行，未使用真实密钥请求外部模型。
+- EXE SHA-256：76b8b6471f557f90c44895df2d708affb61f7a4f6f4375fe1fb2cddbbe1c78ff
+- ZIP SHA-256：4664c750949cc3a935579fdb21e369da7380b0b421525ff863b54297856b0787
+- 报告：artifacts/settings-runtime-verification/settings-runtime-report.json、artifacts/stream-runtime-verification/stream-runtime-report.json、artifacts/provider-verification/provider-routing-report.json。
+
+### 2026-11-03 11:07:16 +08:00 — 最终复核
+- 首轮正式包验收通过后，重复压力验收发现脚本在 done 帧处提前结束，偶尔把其后的 stage_end/session_meta 当作重放差异；实际数据库事件完整。已改为等待持久化最后序号，并比较全部事件，修正后的完整压力、故障注入、重启重放验收再次通过。
+- 三份最终报告均通过，EXE 哈希一致；37 个设置入口失败 0。原用户数据库哈希不变，target 不存在，ZIP 与 .sha256 一致。当前代码和交付程序可用。

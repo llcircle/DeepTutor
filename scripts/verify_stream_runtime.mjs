@@ -46,7 +46,7 @@ const mock = createServer(async (request, response) => {
         response.end(delta({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`,
           function: { name: "load_tools", arguments: '{"names":[]}' } }] }) + "data: [DONE]\n\n");
       } else {
-        assert.equal(body.messages.filter(message => message.role === "tool").length, 10);
+        assert.equal(body.messages.filter(message => message.role === "tool").length, 7);
         response.end(delta({ content: "工具上限后的最终回答" }) + "data: [DONE]\n\n");
       }
     } else if (String(mode).startsWith("并发长流")) {
@@ -127,7 +127,7 @@ async function save() {
   assert.deepEqual(applied.catalog, catalog, "保存改变了网关配置");
 }
 
-async function socketCommand(command, expectedCode = "") {
+async function socketCommand(command, expectedCode = "", untilSeq = 0) {
   const socket = new WebSocket(serviceUrl.replace("http:", "ws:") + "/ws");
   const frames = [];
   let timer;
@@ -144,8 +144,10 @@ async function socketCommand(command, expectedCode = "") {
           if (frame.type === "done") {
             assert.equal(frame.metadata?.status, expectedCode ? "failed" : "completed");
             assert.equal(frame.metadata?.error_code ?? "", expectedCode);
-            resolve();
+            if (!untilSeq) resolve();
           }
+          // 重放还包含 done 后的阶段结束和会话信息，等到已知持久化序列的末尾。
+          if (untilSeq && frame.seq >= untilSeq) resolve();
         } catch (error) { reject(error); }
       });
     });
@@ -197,11 +199,11 @@ try {
   const toolTurn = await chat("工具上限");
   assert.equal(assistantText(toolTurn), "工具上限后的最终回答");
   const toolRequests = records.filter(record => record.mode === "工具上限");
-  assert.equal(toolRequests.length, 11);
+  assert.equal(toolRequests.length, 8);
   assert.equal(toolRequests.at(-1).tools, false);
-  checks.push("10 轮工具调用后发送一次不带工具的最终回答请求，正文持久化成功");
+  checks.push("默认 7 轮工具调用后发送一次不带工具的最终回答请求，正文持久化成功");
   await chat("工具违约", "tool_round_limit");
-  assert.equal(records.filter(record => record.mode === "工具违约").length, 11);
+  assert.equal(records.filter(record => record.mode === "工具违约").length, 8);
   checks.push("达到上限后仍返回工具调用时明确失败，不继续执行或误报空响应");
   for (const [mode, expected] of [["完整JSON", "完整中文答案"], ["数组与末帧", "中文末帧答案"]]) {
     const turn = await chat(mode);
@@ -240,9 +242,12 @@ try {
   await stop();
   await start();
   assert.deepEqual(await api("/settings/catalog", undefined, "GET"), catalog);
-  const replay = await socketCommand({ type: "subscribe_turn", turn_id: turns[0].turnId, after_seq: 0 });
-  const untilDone = beforeRestart.slice(0, beforeRestart.findIndex(event => event.type === "done") + 1);
-  assert.deepEqual(replay.filter(frame => frame.seq), untilDone, "重启重放与持久化事件不一致");
+  const replay = await socketCommand(
+    { type: "subscribe_turn", turn_id: turns[0].turnId, after_seq: 0 },
+    "",
+    beforeRestart.at(-1).seq,
+  );
+  assert.deepEqual(replay.filter(frame => frame.seq), beforeRestart, "重启重放与持久化事件不一致");
   assert.equal(assistantText(await chat("重启后继续聊天")), "重启与落库验证答案");
   assert.equal(database.prepare("PRAGMA integrity_check").get().integrity_check, "ok");
   checks.push("重启后模型配置、聊天和事件完整保留，WebSocket 逐条重放一致，数据库完整性检查通过");

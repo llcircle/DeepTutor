@@ -278,7 +278,20 @@ export const TOUR_STEPS: TourStep[] = [
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 export function cloneCatalog(catalog: Catalog): Catalog {
-  return JSON.parse(JSON.stringify(catalog)) as Catalog;
+  const value = JSON.parse(JSON.stringify(catalog)) as Catalog;
+  const defaults = defaultCatalog();
+  const services = { ...defaults.services, ...value.services };
+  for (const name of Object.keys(defaults.services) as ServiceName[]) {
+    const bucket = services[name];
+    services[name] = {
+      ...defaults.services[name],
+      ...bucket,
+      profiles: (Array.isArray(bucket?.profiles) ? bucket.profiles : [])
+        .filter(profile => profile && typeof profile === "object")
+        .map(profile => ({ ...profile, models: Array.isArray(profile.models) ? profile.models : [] })),
+    };
+  }
+  return { ...defaults, ...value, services, connections: Array.isArray(value.connections) ? value.connections : [] };
 }
 
 /** TTS/STT share the catalog shape but configure audio providers. */
@@ -766,7 +779,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       }
       const payload = (await settingsResponse.json()) as SettingsPayload;
       if (payload.catalog) {
-        setCatalog(payload.catalog);
+        setCatalog(cloneCatalog(payload.catalog));
         setDraft(cloneCatalog(payload.catalog));
         setCatalogEditable(true);
       } else {
@@ -1522,7 +1535,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           draft: StoredDraft | null;
         };
         const appliedService = cloneCatalog(payload.catalog).services[service];
-        setCatalog(payload.catalog);
+        setCatalog(cloneCatalog(payload.catalog));
         setDraft((current) => {
           const next = cloneCatalog(current);
           if (
@@ -1582,7 +1595,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
               ? payload.detail
               : `HTTP ${response.status}`,
           );
-        setCatalog(payload.catalog);
+        setCatalog(cloneCatalog(payload.catalog));
         setDraft((current) =>
           reconcileRegistrySave(current, draft, payload.catalog, edit),
         );
@@ -1674,7 +1687,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
               : `HTTP ${response.status}`,
           );
         const live = payload.catalog as Catalog;
-        setCatalog(live);
+        setCatalog(cloneCatalog(live));
         setDraft((current) =>
           reconcileProviderSave(current, draft, live, service, profileId),
         );
@@ -1783,7 +1796,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         const payload = await asJsonOrThrow(response);
         if (!payload.catalog)
           throw new Error("Missing catalog in apply response");
-        setCatalog(payload.catalog);
+        setCatalog(cloneCatalog(payload.catalog));
         setDraft(cloneCatalog(payload.catalog));
         invalidateLLMOptionsCache();
         try {

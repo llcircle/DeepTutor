@@ -3,11 +3,31 @@ import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import {
   SettingsProvider,
+  cloneCatalog,
   defaultCatalog,
   useSettings,
   type Catalog,
 } from "@/features/settings/store/SettingsStore";
 import { modelTestFingerprint, modelTestKey } from "@/lib/model-settings";
+
+it("补齐旧版局部模型目录，保留连接引用和自定义字段", () => {
+  const raw = {
+    version: 1,
+    connections: [{ id: "gateway", name: "本地网关", provider: "custom" }],
+    services: {
+      llm: { profiles: [{ id: "p", name: "模型", binding: "custom", provider_ref: { connection_id: "gateway" }, models: [] }] },
+      embedding: null,
+    },
+    custom_future_field: "preserve",
+  } as unknown as Catalog;
+  const normalized = cloneCatalog(raw);
+  expect(normalized.services.task.profiles).toEqual([]);
+  expect(normalized.services.embedding.profiles).toEqual([]);
+  expect(normalized.services.llm.profiles[0].provider_ref?.connection_id).toBe("gateway");
+  expect(normalized.connections?.[0].id).toBe("gateway");
+  expect((normalized as unknown as Record<string, unknown>).custom_future_field).toBe("preserve");
+  expect(raw.services.embedding).toBeNull();
+});
 
 const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),

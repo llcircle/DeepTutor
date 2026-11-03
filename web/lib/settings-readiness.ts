@@ -1,4 +1,5 @@
 import { apiFetch, apiUrl } from "@/lib/api";
+import { requireSettingsResponse } from "@/lib/settings-response";
 import { settingsAnchorHref } from "@/features/settings/navigation/settings-nav";
 
 export const READINESS_STATES = [
@@ -213,5 +214,7 @@ export async function fetchSettingsReadiness(): Promise<SettingsReadinessSnapsho
   const response = await apiFetch(apiUrl("/api/settings/readiness"));
   if (!response.ok)
     throw new Error("Capability readiness could not be loaded.");
-  return (await response.json()) as SettingsReadinessSnapshot;
+  const value = await response.json();
+  requireSettingsResponse(value, "readiness");
+  return value as SettingsReadinessSnapshot;
 }

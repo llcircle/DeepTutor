@@ -14,6 +14,16 @@ pub struct LlmSettings {
     pub model: String,
     pub api_format: ApiFormat,
     pub headers: Vec<(String, String)>,
+    pub temperature: Option<f64>,
+    pub max_tokens: Option<u64>,
+}
+
+fn reasoning_model(settings: &LlmSettings) -> bool {
+    let name = settings.model.to_ascii_lowercase();
+    let name = name.rsplit('/').next().unwrap_or(&name);
+    ["gpt-5", "o1", "o3", "o4"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +56,8 @@ pub struct LlmUsage {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub reasoning_tokens: u64,
+    pub cache_input_tokens: u64,
+    pub cache_reported_calls: u64,
 }
 
 impl LlmUsage {
@@ -56,6 +68,8 @@ impl LlmUsage {
         self.cache_read_tokens = self.cache_read_tokens.max(other.cache_read_tokens);
         self.cache_creation_tokens = self.cache_creation_tokens.max(other.cache_creation_tokens);
         self.reasoning_tokens = self.reasoning_tokens.max(other.reasoning_tokens);
+        self.cache_input_tokens = self.cache_input_tokens.max(other.cache_input_tokens);
+        self.cache_reported_calls = self.cache_reported_calls.max(other.cache_reported_calls);
     }
 
     /// 将多个模型请求的用量累加成一个回合级汇总。
@@ -70,6 +84,8 @@ impl LlmUsage {
         self.cache_read_tokens += other.cache_read_tokens;
         self.cache_creation_tokens += other.cache_creation_tokens;
         self.reasoning_tokens += other.reasoning_tokens;
+        self.cache_input_tokens += other.cache_input_tokens;
+        self.cache_reported_calls += other.cache_reported_calls;
     }
 
     pub fn to_json(&self, duration_seconds: f64) -> Value {
@@ -90,16 +106,14 @@ impl LlmUsage {
             "total_tokens": total_tokens,
             "cache_read_input_tokens": self.cache_read_tokens,
             "cache_creation_input_tokens": self.cache_creation_tokens,
+            "cache_input_tokens": self.cache_input_tokens,
+            "cache_reported_calls": self.cache_reported_calls,
             "reasoning_tokens": self.reasoning_tokens,
-            "total_calls": total_calls.max(1),
+            "total_calls": total_calls,
             "duration_seconds": duration_seconds,
-            "generation_seconds": duration_seconds,
-            "timed_completion_tokens": completion_tokens,
-            "tokens_per_second": if duration_seconds > 0.0 {
-                completion_tokens as f64 / duration_seconds
-            } else {
-                0.0
-            }
+            "generation_seconds": 0,
+            "timed_completion_tokens": 0,
+            "tokens_per_second": Value::Null
         })
     }
 }
@@ -214,6 +228,16 @@ where
         "stream": true,
         "stream_options": {"include_usage": true}
     });
+    if let Some(value) = settings.temperature.filter(|_| !reasoning_model(settings)) {
+        body["temperature"] = json!(value);
+    }
+    if let Some(value) = settings.max_tokens {
+        body[if reasoning_model(settings) {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        }] = json!(value);
+    }
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.to_vec());
         body["tool_choice"] = Value::String(tool_choice.unwrap_or("auto").to_string());
@@ -343,6 +367,12 @@ where
         "input": input,
         "stream": true
     });
+    if let Some(value) = settings.temperature.filter(|_| !reasoning_model(settings)) {
+        body["temperature"] = json!(value);
+    }
+    if let Some(value) = settings.max_tokens {
+        body["max_output_tokens"] = json!(value);
+    }
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.iter().map(responses_tool_definition).collect());
         body["tool_choice"] = Value::String(tool_choice.unwrap_or("auto").to_string());
@@ -516,9 +546,12 @@ where
         "model": settings.model,
         "system": system,
         "messages": messages,
-        "max_tokens": 8192,
+        "max_tokens": settings.max_tokens.unwrap_or(8192),
         "stream": true
     });
+    if let Some(value) = settings.temperature {
+        body["temperature"] = json!(value);
+    }
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools.iter().map(anthropic_tool_definition).collect());
         if let Some(name) = tool_choice {
@@ -992,7 +1025,26 @@ fn parse_openai_usage(value: &Value) -> Option<LlmUsage> {
             .pointer("/prompt_tokens_details/cached_tokens")
             .and_then(Value::as_u64)
             .unwrap_or_default(),
+    )
+    .max(
+        value
+            .pointer("/input_tokens_details/cached_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
     );
+    let cache_reported = [
+        "cache_read_input_tokens",
+        "cached_tokens",
+        "cache_read_tokens",
+    ]
+    .iter()
+    .any(|key| object.get(*key).is_some_and(Value::is_number))
+        || value
+            .pointer("/prompt_tokens_details/cached_tokens")
+            .is_some_and(Value::is_number)
+        || value
+            .pointer("/input_tokens_details/cached_tokens")
+            .is_some_and(Value::is_number);
     let reasoning_tokens = value
         .pointer("/completion_tokens_details/reasoning_tokens")
         .and_then(Value::as_u64)
@@ -1004,18 +1056,28 @@ fn parse_openai_usage(value: &Value) -> Option<LlmUsage> {
         cache_read_tokens,
         cache_creation_tokens: 0,
         reasoning_tokens,
+        cache_input_tokens: if cache_reported { prompt_tokens } else { 0 },
+        cache_reported_calls: u64::from(cache_reported),
     })
 }
 
 fn parse_anthropic_usage(value: &Value) -> Option<LlmUsage> {
     let object = value.as_object()?;
+    let prompt = first_u64(object, &["input_tokens"])
+        + first_u64(object, &["cache_read_input_tokens"])
+        + first_u64(object, &["cache_creation_input_tokens"]);
+    let cache_reported = object
+        .get("cache_read_input_tokens")
+        .is_some_and(Value::is_number);
     Some(LlmUsage {
-        prompt_tokens: first_u64(object, &["input_tokens"]),
+        prompt_tokens: prompt,
         completion_tokens: first_u64(object, &["output_tokens"]),
         total_tokens: 0,
         cache_read_tokens: first_u64(object, &["cache_read_input_tokens"]),
         cache_creation_tokens: first_u64(object, &["cache_creation_input_tokens"]),
         reasoning_tokens: 0,
+        cache_input_tokens: if cache_reported { prompt } else { 0 },
+        cache_reported_calls: u64::from(cache_reported),
     })
 }
 
@@ -1259,6 +1321,8 @@ mod tests {
             model: "test-model".to_string(),
             api_format: format,
             headers: Vec::new(),
+            temperature: None,
+            max_tokens: None,
         };
         let mut visible = String::new();
         let response = stream_completion(
@@ -1451,5 +1515,25 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 12);
         assert_eq!(usage.completion_tokens, 7);
         assert_eq!(usage.total_tokens, 19);
+    }
+
+    #[test]
+    fn 缓存命中率只统计明确报告缓存的请求() {
+        let reported = parse_openai_usage(&json!({
+            "input_tokens": 100, "output_tokens": 20,
+            "input_tokens_details": {"cached_tokens": 40}
+        }))
+        .unwrap();
+        let unreported =
+            parse_openai_usage(&json!({"prompt_tokens": 50, "completion_tokens": 10})).unwrap();
+        let mut total = LlmUsage::default();
+        total.accumulate(&reported);
+        total.accumulate(&unreported);
+        let summary = total.summary_json(1.0, 2);
+        assert_eq!(summary["cache_read_input_tokens"], 40);
+        assert_eq!(summary["cache_input_tokens"], 100);
+        assert_eq!(summary["cache_reported_calls"], 1);
+        assert_eq!(summary["total_tokens"], 180);
+        assert_eq!(LlmUsage::default().summary_json(0.0, 0)["total_calls"], 0);
     }
 }

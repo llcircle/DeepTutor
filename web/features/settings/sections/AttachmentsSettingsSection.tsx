@@ -12,6 +12,7 @@ import {
 } from "@/components/settings/shared";
 import { useSettings } from "@/features/settings/store/SettingsStore";
 import { apiFetch, apiUrl } from "@/lib/api";
+import { requireSettingsResponse } from "@/lib/settings-response";
 import { EXTENSION_ENDPOINTS } from "@/lib/settings-extensions";
 
 type AttachmentSettings = {
@@ -75,6 +76,7 @@ export default function AttachmentSettingsPage() {
           );
         }
         if (cancelled) return;
+        requireSettingsResponse(data, "attachments");
         const next = data as AttachmentSettingsPayload;
         setPayload(next);
         const pending = pendingExtensionPayload("chat-attachments") as

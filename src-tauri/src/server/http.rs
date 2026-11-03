@@ -368,6 +368,13 @@ async fn get_settings(ScopedState(state): ScopedState) -> ApiResult<Json<Value>>
         .database
         .get_setting("ui")?
         .unwrap_or_else(|| json!({}));
+    let ui = merge_values(
+        json!({
+            "theme": "snow", "language": "zh", "response_language": "zh",
+            "chat_response_timeout": 120, "voice_autoplay": false, "voice_math_speak": true
+        }),
+        ui,
+    );
     let catalog = state
         .database
         .get_setting("catalog")?
@@ -559,19 +566,20 @@ async fn apply_settings_registry(state: ScopedState, body: Json<Value>) -> ApiRe
 }
 
 async fn get_network(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    Ok(Json(
-        state
-            .database
-            .get_setting("network")?
-            .unwrap_or_else(|| json!({})),
-    ))
+    Ok(Json(super::settings_contracts::network(&state)?))
 }
 
 async fn put_network(
     ScopedState(state): ScopedState,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(state.database.merge_setting("network", &body)?))
+    let payload = super::settings_contracts::network(&state)?;
+    if body != payload["settings"] {
+        return Err(ApiError::bad_request(
+            "桌面客户端使用自动分配的本地端口和同源前端，不能修改服务器部署参数。",
+        ));
+    }
+    Ok(Json(payload))
 }
 
 async fn put_enabled_tools(
@@ -616,14 +624,14 @@ async fn put_chat_timeout(
     ScopedState(state): ScopedState,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(state.database.merge_setting("chat", &body)?))
+    Ok(Json(state.database.merge_setting("ui", &body)?))
 }
 
 async fn put_voice_autoplay(
     ScopedState(state): ScopedState,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(state.database.merge_setting("voice", &body)?))
+    Ok(Json(state.database.merge_setting("ui", &body)?))
 }
 
 async fn put_voice_math_speak(state: ScopedState, body: Json<Value>) -> ApiResult<Json<Value>> {
@@ -631,37 +639,27 @@ async fn put_voice_math_speak(state: ScopedState, body: Json<Value>) -> ApiResul
 }
 
 async fn get_chat_starters(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    Ok(Json(
-        state
-            .database
-            .get_setting("chat_starters")?
-            .unwrap_or_else(|| json!({"starters": []})),
-    ))
+    Ok(Json(super::settings_contracts::starters(&state)?))
 }
 
 async fn put_chat_starters(
     ScopedState(state): ScopedState,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    state.database.set_setting("chat_starters", &body)?;
-    Ok(Json(body))
+    super::settings_contracts::write(&state, "chat_starters", &body)?;
+    Ok(Json(super::settings_contracts::starters(&state)?))
 }
 
 async fn get_chat_attachments(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    Ok(Json(
-        state
-            .database
-            .get_setting("chat_attachments")?
-            .unwrap_or_else(|| json!({"attachments": []})),
-    ))
+    Ok(Json(super::settings_contracts::attachments(&state)?))
 }
 
 async fn put_chat_attachments(
     ScopedState(state): ScopedState,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    state.database.set_setting("chat_attachments", &body)?;
-    Ok(Json(body))
+    super::settings_contracts::write(&state, "chat_attachments", &body)?;
+    Ok(Json(super::settings_contracts::attachments(&state)?))
 }
 
 async fn get_themes() -> Json<Value> {
@@ -766,30 +764,14 @@ fn page_customization_document(all: &Value) -> Value {
 }
 
 async fn settings_readiness(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    let catalog = state
-        .database
-        .get_setting("catalog")?
-        .unwrap_or_else(|| json!({}));
-    Ok(Json(json!({
-        "ready": active_llm(&catalog).is_some(),
-        "services": {
-            "llm": if active_llm(&catalog).is_some() {"configured"} else {"not_configured"},
-            "database": "ready",
-            "rust_runtime": "ready"
-        }
-    })))
+    Ok(Json(super::settings_contracts::readiness(&state)?))
 }
 
-async fn settings_usage(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    Ok(Json(
-        state.database.get_setting("usage")?.unwrap_or_else(|| {
-            json!({
-                "totals": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cost": 0},
-                "by_model": [],
-                "by_day": []
-            })
-        }),
-    ))
+async fn settings_usage(
+    state: ScopedState,
+    query: Query<super::usage_statistics::UsageQuery>,
+) -> ApiResult<Json<Value>> {
+    super::usage_statistics::get(state, query).await
 }
 
 async fn tour_status(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
@@ -1502,14 +1484,21 @@ async fn registered_capabilities(ScopedState(state): ScopedState) -> ApiResult<J
 }
 
 async fn get_capability_settings(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
-    get_raw_setting(&state, "capability_settings")
+    Ok(Json(super::settings_contracts::read(
+        &state,
+        "capability_settings",
+    )?))
 }
 
 async fn put_capability_settings(
     ScopedState(state): ScopedState,
     Json(body): Json<Value>,
 ) -> ApiResult<Json<Value>> {
-    put_raw_setting(&state, "capability_settings", body)
+    Ok(Json(super::settings_contracts::write(
+        &state,
+        "capability_settings",
+        &body,
+    )?))
 }
 
 async fn list_tools(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
@@ -2455,6 +2444,126 @@ mod tests {
     #[test]
     fn api_router_constructs_without_overlapping_routes() {
         let _router: Router<AppState> = router();
+    }
+
+    #[test]
+    fn usage_groups_followup_user_and_legacy_assistant_into_real_turns() {
+        let (state, _temporary) = test_state();
+        state
+            .database
+            .create_session("usage", "使用量测试", &json!({}), "")
+            .unwrap();
+        let insert = |role, parent| {
+            state
+                .database
+                .add_message(crate::storage::NewMessage {
+                    session_id: "usage",
+                    role,
+                    content: "测试",
+                    capability: Some("chat"),
+                    events: json!([]),
+                    attachments: json!([]),
+                    metadata: json!({}),
+                    parent_message_id: parent,
+                })
+                .unwrap()
+        };
+        let user = insert("user", None);
+        let assistant = insert("assistant", Some(user));
+        let followup = insert("user", Some(assistant));
+        let legacy = insert("assistant", None);
+        let rows = state.database.usage_records(0.0, f64::MAX).unwrap();
+        assert_eq!(
+            rows.iter().find(|row| row["id"] == user).unwrap()["activity_id"],
+            user
+        );
+        assert_eq!(
+            rows.iter().find(|row| row["id"] == followup).unwrap()["activity_id"],
+            followup
+        );
+        assert_eq!(
+            rows.iter().find(|row| row["id"] == legacy).unwrap()["activity_id"],
+            followup
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_contracts_roundtrip_and_legacy_defaults() {
+        let (state, _temporary) = test_state();
+        assert_eq!(
+            get_chat_starters(ScopedState(state.clone()))
+                .await
+                .unwrap()
+                .0["settings"]["trace_count"],
+            20
+        );
+        let saved = put_chat_starters(ScopedState(state.clone()), Json(json!({"trace_count": 30})))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(saved["bounds"]["trace_count"], json!([3, 100]));
+        assert_eq!(saved["settings"]["trace_count"], 30);
+        assert!(put_chat_starters(
+            ScopedState(state.clone()),
+            Json(json!({"trace_count": 101}))
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            get_chat_starters(ScopedState(state.clone()))
+                .await
+                .unwrap()
+                .0["settings"]["trace_count"],
+            30
+        );
+        state
+            .database
+            .set_setting(
+                "capability_settings",
+                &json!({"chat": {"temperature": 0.6}, "question": null}),
+            )
+            .unwrap();
+        let caps = get_capability_settings(ScopedState(state.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(caps["chat"]["temperature"], 0.6);
+        assert_eq!(caps["question"]["exploring"]["max_iterations"], 7);
+        let attachments = get_chat_attachments(ScopedState(state.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(attachments["effective"]["max_file_bytes"], 20 * 1024 * 1024);
+        *state.runtime_url.lock() = "http://127.0.0.1:45678".into();
+        let network = get_network(ScopedState(state.clone())).await.unwrap().0;
+        assert_eq!(network["settings"]["backend_port"], 45678);
+        assert_eq!(
+            network["effective"]["backend_url"],
+            "http://127.0.0.1:45678"
+        );
+        assert!(put_network(
+            ScopedState(state.clone()),
+            Json(json!({"backend_port": 8000}))
+        )
+        .await
+        .is_err());
+        let ready = settings_readiness(ScopedState(state.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(ready["schema_version"], "deeptutor.settings-readiness/v2");
+        assert_eq!(ready["summary"]["enabled_verified"], 3);
+        assert_eq!(ready["ok"], false);
+        put_chat_timeout(
+            ScopedState(state.clone()),
+            Json(json!({"chat_response_timeout": 60})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            get_settings(ScopedState(state)).await.unwrap().0["ui"]["chat_response_timeout"],
+            60
+        );
     }
 
     #[tokio::test]

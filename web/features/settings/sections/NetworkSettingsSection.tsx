@@ -12,6 +12,7 @@ import {
 } from "@/components/settings/shared";
 import { useSettings } from "@/features/settings/store/SettingsStore";
 import { apiFetch, apiUrl } from "@/lib/api";
+import { requireSettingsResponse } from "@/lib/settings-response";
 import {
   RuntimeHealthCard,
   TurnCoordinationSettings,
@@ -26,6 +27,7 @@ type NetworkSettings = {
 };
 
 type NetworkSettingsPayload = {
+  desktop_managed?: boolean;
   settings: NetworkSettings;
   effective: {
     backend_url: string;
@@ -122,6 +124,7 @@ export default function NetworkSettingsPage() {
           );
         }
         if (cancelled) return;
+        requireSettingsResponse(data, "network");
         const next = data as NetworkSettingsPayload;
         setPayload(next);
         const pending = pendingExtensionPayload("network") as
@@ -208,13 +211,15 @@ export default function NetworkSettingsPage() {
     <div data-tour="tour-network">
       <SettingsPageHeader
         title={t("Network")}
-        description={t(
+        description={payload?.desktop_managed ? "查看 Rust 本地服务的实际地址、运行端口和网络状态。" : t(
           "Control the browser-facing API URL and CORS origins used by Docker, LAN, and reverse-proxy deployments.",
         )}
       />
 
       <p className="mb-7 text-[12px] text-[var(--muted-foreground)]">
-        {t("Network changes take effect after restart.")}
+        {payload?.desktop_managed
+          ? "桌面客户端使用 Rust 本地服务和同源静态前端，端口在启动时自动分配；以下部署参数由客户端管理。"
+          : t("Network changes take effect after restart.")}
       </p>
 
       <div className="mb-7">
@@ -282,22 +287,23 @@ export default function NetworkSettingsPage() {
             />
             <DetailTile
               label={t("Restart")}
-              value={t("Required after save")}
-              tone="warn"
+              value={payload.desktop_managed ? "自动管理" : t("Required after save")}
+              tone={payload.desktop_managed ? "ok" : "warn"}
             />
           </div>
 
           <SettingSection
             title={t("Runtime ports")}
-            description={t(
+            description={payload.desktop_managed ? "前端和后端共用自动分配的本地端口，仅接受本机连接。" : t(
               "These ports are read during startup. Docker port mappings must match the container-side values.",
             )}
           >
             <SettingRow
               title={t("Backend port")}
-              description={t("FastAPI listens on this port.")}
+              description={payload.desktop_managed ? "Rust Axum 本地服务当前使用的端口。" : t("FastAPI listens on this port.")}
               control={
                 <input
+                  disabled={payload.desktop_managed}
                   className={`${inputClass} w-28`}
                   type="number"
                   min={1}
@@ -318,9 +324,10 @@ export default function NetworkSettingsPage() {
             />
             <SettingRow
               title={t("Frontend port")}
-              description={t("Next.js serves the Web UI on this port.")}
+              description={payload.desktop_managed ? "桌面静态前端与 Rust 服务共用同一端口。" : t("Next.js serves the Web UI on this port.")}
               control={
                 <input
+                  disabled={payload.desktop_managed}
                   className={`${inputClass} w-28`}
                   type="number"
                   min={1}
@@ -356,6 +363,7 @@ export default function NetworkSettingsPage() {
                 <input
                   className={`${inputClass} w-[360px] max-w-[48vw]`}
                   placeholder={apiBasePlaceholder}
+                  disabled={payload.desktop_managed}
                   value={draft.public_api_base}
                   onChange={(event) =>
                     setDraft((current) =>
@@ -377,6 +385,7 @@ export default function NetworkSettingsPage() {
           >
             <div className="py-4">
               <textarea
+                disabled={payload.desktop_managed}
                 className={`${inputClass} min-h-28 resize-y font-mono text-[12.5px] leading-relaxed`}
                 placeholder={corsPlaceholder}
                 value={corsText}

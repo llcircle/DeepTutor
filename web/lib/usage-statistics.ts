@@ -1,5 +1,6 @@
 import type { components } from '@/contracts/generated/api'
 import { requestJson } from '@/shared/api/client'
+import { requireSettingsResponse } from '@/lib/settings-response'
 
 export type UsageStatistics = components['schemas']['UsageStatistics']
 export type DailyUsage = components['schemas']['DailyUsage']
@@ -10,7 +11,10 @@ export async function fetchUsageStatistics(
 ): Promise<UsageStatistics> {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   const query = new URLSearchParams({ year: String(year), timezone })
-  return requestJson<UsageStatistics>(`/api/settings/usage?${query}`, { signal, scope: 'settings' })
+  const value = await requestJson<UsageStatistics>(`/api/settings/usage?${query}`, { signal, scope: 'settings' })
+  requireSettingsResponse(value, 'usage')
+  if (value.year !== year) throw new Error('用量统计返回的年份与请求不一致，请刷新后重试。')
+  return value
 }
 
 export function usageYear(value: string | null, current: number): number {

@@ -49,8 +49,8 @@ impl Subscriptions {
 
 /// 统一回合协议入口。
 pub async fn websocket(ws: WebSocketUpgrade, ScopedState(state): ScopedState) -> impl IntoResponse {
-    ws.max_message_size(64 * 1024 * 1024)
-        .max_frame_size(16 * 1024 * 1024)
+    ws.max_message_size(super::MAX_UPLOAD_FRAME_BYTES)
+        .max_frame_size(super::MAX_UPLOAD_FRAME_BYTES)
         .on_upgrade(move |socket| handle_socket(socket, state))
 }
 

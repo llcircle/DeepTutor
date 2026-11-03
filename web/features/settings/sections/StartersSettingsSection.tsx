@@ -14,6 +14,7 @@ import {
 } from "@/components/settings/shared";
 import { useSettings } from "@/features/settings/store/SettingsStore";
 import { apiFetch, apiUrl } from "@/lib/api";
+import { requireSettingsResponse } from "@/lib/settings-response";
 import { EXTENSION_ENDPOINTS } from "@/lib/settings-extensions";
 
 type StarterSettings = { trace_count: number };
@@ -51,6 +52,7 @@ export default function StarterSettingsPage() {
           );
         }
         if (cancelled) return;
+        requireSettingsResponse(data, "starters");
         const next = data as StarterSettingsPayload;
         setPayload(next);
         // An edit left behind earlier in this session (or parked in a saved

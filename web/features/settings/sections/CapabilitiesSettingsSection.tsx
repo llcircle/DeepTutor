@@ -5,6 +5,7 @@ import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { apiFetch, apiUrl } from "@/lib/api";
+import { requireSettingsResponse } from "@/lib/settings-response";
 import { EXTENSION_ENDPOINTS } from "@/lib/settings-extensions";
 import {
   SettingRow,
@@ -67,22 +68,12 @@ interface CapabilitiesSettingsDTO {
 function isValidCapabilitiesDTO(
   value: unknown,
 ): value is CapabilitiesSettingsDTO {
-  if (!value || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
-  const chat = v.chat as Record<string, unknown> | undefined;
-  const solve = v.solve as Record<string, unknown> | undefined;
-  return (
-    !!chat &&
-    typeof chat.temperature === "number" &&
-    typeof chat.max_rounds === "number" &&
-    !!chat.stage_budgets &&
-    !!solve &&
-    typeof solve.max_rounds === "number" &&
-    typeof solve.max_replans === "number" &&
-    !!v.research &&
-    !!v.question &&
-    !!v.visualize
-  );
+  try {
+    requireSettingsResponse(value, "capabilities");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export default function CapabilitiesSettingsPage() {

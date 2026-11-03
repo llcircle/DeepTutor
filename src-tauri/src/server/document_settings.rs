@@ -801,7 +801,7 @@ fn mineru_version_current(version: &str) -> bool {
     numbers.as_slice().cmp(&[3, 4, 5]).is_ge()
 }
 
-fn document_payload(state: &AppState) -> Result<Value, String> {
+pub(super) fn document_payload(state: &AppState) -> Result<Value, String> {
     let settings = load_document_settings(state)?;
     let mut redacted = settings.clone();
     if let Some(engines) = redacted.get_mut("engines").and_then(Value::as_object_mut) {

@@ -16,7 +16,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-const MAX_TOOL_ROUNDS: usize = 10;
+#[cfg(test)]
+const MAX_TOOL_ROUNDS: usize = 7;
 const MAX_PARALLEL_TOOLS: usize = 4;
 const MAX_CONTEXT_CHARS: usize = 180_000;
 
@@ -1140,9 +1141,17 @@ async fn run_turn(context: &mut TurnContext) {
             }
         }
     } else if !capability_failed {
+        let block =
+            super::settings_contracts::capability_block(&context.state, &context.capability)
+                .unwrap_or_else(|_| json!({}));
+        let max_calls = block
+            .get("max_rounds")
+            .and_then(Value::as_u64)
+            .unwrap_or(8)
+            .clamp(1, 50) as usize;
         // 工具轮次耗尽后仍留一次不带工具的请求，将已有材料整理成最终回答。
-        for round in 0..=MAX_TOOL_ROUNDS {
-            let final_round = round == MAX_TOOL_ROUNDS;
+        for round in 0..max_calls {
+            let final_round = round + 1 == max_calls;
             drain_queued_input(context);
             if final_round {
                 context.provider_messages.push(json!({
@@ -1397,7 +1406,9 @@ async fn run_turn(context: &mut TurnContext) {
     }
 
     let duration = start.elapsed().as_secs_f64();
-    let usage_json = usage.summary_json(duration, calls);
+    let mut usage_json = usage.summary_json(duration, calls);
+    usage_json["provider"] = json!(context.llm.provider);
+    usage_json["model"] = json!(context.llm.model);
     let mut assistant_content = final_content.clone();
 
     if status == "completed" {
@@ -2701,6 +2712,40 @@ async fn prepare_attachments(
     }
 
     let mut prepared = Vec::with_capacity(attachments.len());
+    let limits =
+        super::settings_contracts::read(state, "chat_attachments").map_err(|e| e.to_string())?;
+    let max_file = limits["max_file_mb"].as_u64().unwrap_or(20) as usize * 1024 * 1024;
+    let max_total = limits["max_total_mb"].as_u64().unwrap_or(25) as usize * 1024 * 1024;
+    let mut total = 0usize;
+    // 在任何文件写入之前检查整个上传批次，避免后续附件越限留下半批记录。
+    for attachment in &attachments {
+        let size = if let Some(encoded) = attachment.get("base64").and_then(Value::as_str) {
+            encoded
+                .len()
+                .saturating_div(4)
+                .saturating_mul(3)
+                .saturating_sub(
+                    encoded
+                        .chars()
+                        .rev()
+                        .take_while(|c| *c == '=')
+                        .count()
+                        .min(2),
+                )
+        } else {
+            attachment
+                .get("size_bytes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize
+        };
+        total = total.saturating_add(size);
+        if size > max_file || total > max_total {
+            return Err(format!(
+                "附件超过设置中的限制：单文件 {} MB，本轮合计 {} MB。",
+                limits["max_file_mb"], limits["max_total_mb"]
+            ));
+        }
+    }
     for (index, attachment) in attachments.into_iter().enumerate() {
         let id = attachment
             .get("id")
@@ -2735,8 +2780,8 @@ async fn prepare_attachments(
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(base64.unwrap_or_default())
             .map_err(|error| format!("附件 {filename} 不是有效的 Base64 数据：{error}"))?;
-        if bytes.len() > 200 * 1024 * 1024 {
-            return Err(format!("附件 {filename} 超过 200 MB 上限。"));
+        if bytes.len() > max_file {
+            return Err(format!("附件 {filename} 超过已设置的单文件上限。"));
         }
         let sha256 = format!("{:x}", Sha256::digest(&bytes));
         let parsed = super::parsing::extract(state, &filename, &bytes)
@@ -2770,6 +2815,7 @@ async fn prepare_attachments(
 
     let mut enriched = Vec::with_capacity(prepared.len());
     let mut progress = Vec::new();
+    let mut remaining_chars = limits["max_chars_total"].as_u64().unwrap_or(150000) as usize;
     for (index, id, filename, mime_type, sha256, extracted, mut attachment) in prepared {
         let relative_path = format!("{session_id}/{id}/{filename}");
         let (size_bytes, extracted_text, parse_result) = if let Some((parsed, size)) = extracted {
@@ -2817,6 +2863,15 @@ async fn prepare_attachments(
         attachment["sha256"] = Value::String(sha256.clone());
         attachment["url"] = Value::String(format!("/files/attachments/{relative_path}"));
         attachment["relative_path"] = Value::String(relative_path.clone());
+        let extracted_text = extracted_text.map(|text| {
+            let text = truncate(
+                &text,
+                remaining_chars
+                    .min(limits["max_chars_per_doc"].as_u64().unwrap_or(200000) as usize),
+            );
+            remaining_chars = remaining_chars.saturating_sub(text.chars().count());
+            text
+        });
         if let Some(text) = &extracted_text {
             attachment["extracted_text"] = Value::String(text.clone());
         }
@@ -2943,7 +2998,20 @@ pub(super) fn resolve_llm_settings(
         .or_else(|| models.first())
         .ok_or_else(|| "当前模型服务没有配置模型。".to_string())?;
     let profile = super::catalog::resolve_profile_provider(&catalog, "llm", profile, Some(model))?;
-    super::provider_probe::llm_settings(&profile, model)
+    let mut settings = super::provider_probe::llm_settings(&profile, model)?;
+    let capability = request
+        .get("capability")
+        .and_then(Value::as_str)
+        .unwrap_or("chat");
+    let block = super::settings_contracts::capability_block(state, capability)
+        .map_err(|error| format!("无法读取能力设置：{error:?}"))?;
+    settings.temperature = block["temperature"].as_f64();
+    settings.max_tokens = block["max_tokens"].as_u64().or_else(|| {
+        block
+            .pointer("/stage_budgets/responding")
+            .and_then(Value::as_u64)
+    });
+    Ok(settings)
 }
 
 fn enabled_tools(state: &AppState, request: &Value) -> Result<Vec<String>, String> {

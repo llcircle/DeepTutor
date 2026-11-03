@@ -623,6 +623,8 @@ pub(super) fn llm_settings(profile: &Value, model: &Value) -> Result<LlmSettings
             profile.get("wire_api").and_then(Value::as_str),
         ),
         headers: catalog::extra_headers(profile),
+        temperature: None,
+        max_tokens: None,
     })
 }
 

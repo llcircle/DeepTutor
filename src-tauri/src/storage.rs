@@ -102,6 +102,8 @@ impl Database {
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_session
                     ON messages(session_id, id);
+                CREATE INDEX IF NOT EXISTS idx_messages_usage_time
+                    ON messages(created_at);
 
                 CREATE TABLE IF NOT EXISTS turns (
                     id TEXT PRIMARY KEY,
@@ -835,6 +837,41 @@ impl Database {
             .map_err(|error| format!("无法查询消息：{error}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("无法解析消息：{error}"))
+    }
+
+    /// 仅读取所选年度的统计证据，避免为设置页加载全部聊天正文。
+    pub fn usage_records(&self, start: f64, end: f64) -> Result<Vec<Value>, String> {
+        let connection = self.connect()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, session_id, role,
+                    CASE WHEN json_valid(metadata_json) AND
+                        (json_type(metadata_json, '$.usage_summary') = 'object' OR
+                         json_type(metadata_json, '$.cost_summary') = 'object')
+                    THEN '[]' ELSE events_json END, metadata_json, created_at,
+                    CASE WHEN role = 'user' THEN id ELSE COALESCE(
+                        parent_message_id,
+                        (SELECT MAX(previous.id) FROM messages previous
+                         WHERE previous.session_id = messages.session_id
+                         AND previous.role = 'user' AND previous.id < messages.id), id)
+                    END
+             FROM messages WHERE created_at >= ?1 AND created_at < ?2
+             AND role IN ('user', 'assistant') ORDER BY id",
+            )
+            .map_err(|e| format!("无法准备使用量查询：{e}"))?;
+        let rows = statement
+            .query_map(params![start, end], |row| {
+                Ok(json!({
+                    "id": row.get::<_, i64>(0)?, "session_id": row.get::<_, String>(1)?,
+                    "role": row.get::<_, String>(2)?,
+                    "events": parse_sql_json(row.get::<_, String>(3)?, json!([])),
+                    "metadata": parse_sql_json(row.get::<_, String>(4)?, json!({})),
+                    "created_at": row.get::<_, f64>(5)?, "activity_id": row.get::<_, i64>(6)?
+                }))
+            })
+            .map_err(|e| format!("无法查询使用量：{e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("无法读取使用量：{e}"))
     }
 
     pub fn get_message(&self, session_id: &str, message_id: i64) -> Result<Option<Value>, String> {

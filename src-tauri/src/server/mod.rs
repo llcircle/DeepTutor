@@ -42,6 +42,7 @@ mod question_bank;
 mod rag_config;
 mod reading;
 mod reading_sessions;
+mod settings_contracts;
 mod settings_profile;
 mod settings_services;
 mod skills;
@@ -50,6 +51,7 @@ mod subagents;
 mod system_update;
 mod tool_policy;
 mod tools;
+mod usage_statistics;
 mod video_learning;
 mod visualizers;
 mod workspace_data;
@@ -84,9 +86,11 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 pub use error::{ApiError, ApiResult};
+pub(super) const MAX_UPLOAD_FRAME_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub(super) runtime_url: Arc<Mutex<String>>,
     pub database: Database,
     pub paths: PortablePaths,
     pub client: Client,
@@ -128,6 +132,7 @@ impl AppState {
             .build()
             .map_err(|error| format!("无法初始化网络客户端：{error}"))?;
         Ok(Self {
+            runtime_url: Arc::new(Mutex::new(String::new())),
             database,
             paths,
             client,
@@ -174,6 +179,7 @@ impl AppState {
             }
         }
         state.active_turns = self.active_turns.clone();
+        state.runtime_url = self.runtime_url.clone();
         state.maintenance = self.maintenance.clone();
         state.update_exit = self.update_exit.clone();
         state.user_states = Arc::new(Mutex::new(HashMap::new()));
@@ -339,6 +345,7 @@ pub async fn start(state: AppState, web_directory: PathBuf) -> Result<ServerRunt
     let address: SocketAddr = listener
         .local_addr()
         .map_err(|error| format!("无法读取本地服务地址：{error}"))?;
+    *state.runtime_url.lock() = format!("http://{address}");
     let scheduler_state = state.clone();
 
     let static_service = ServeDir::new(&web_directory).not_found_service(ServeFile::new(&index));
@@ -376,7 +383,7 @@ pub async fn start(state: AppState, web_directory: PathBuf) -> Result<ServerRunt
         .route("/health/ready", get(http::health))
         .merge(websocket_routes)
         .fallback_service(static_service)
-        .layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_FRAME_BYTES))
         .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()

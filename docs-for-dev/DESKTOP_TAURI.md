@@ -269,6 +269,23 @@ artifact 数量、文件哈希和超时。子进程环境被清空，仅保留�
 不会安装或调用；MinerU、Docling、Tika 可使用远程服务或用户配置的外部
 CLI。状态码 `external_parser_required` 表示需要用户配置外部解析器。
 
+## 设置与用量统计
+
+对话、附件、能力、网络和运行状态接口返回完整的设置契约。旧数据库中的
+局部配置、缺失字段和 `null` 在读取时补齐默认值；新写入按类型与范围
+校验，非法设置不落库。桌面网络页展示实际的 Rust 本地地址，端口由客户端
+启动时分配，不提供无效的服务器部署参数编辑。
+
+用量统计只汇总 SQLite 中已保存的助手消息用量，优先使用
+`metadata.usage_summary`，兼容旧事件快照，并避免重复累计 `result` 和
+`done`。按请求年份和 IANA 时区分组；未记录 token、缓存分母、首字延迟
+或生成耗时的数据不估算补齐。旧消息没有模型归属时保留为历史汇总。
+
+当前 Rust 版仅在嵌入模型连接测试及系统对应测试中实际请求 embedding
+接口。知识库 RAG 和记忆检索使用本地词法匹配，沉浸式阅读使用文档文本、
+全文检索与页面图片，均未调用向量模型。知识库的 `embedding_model`
+字段和模型关联展示不表示已经执行向量索引或产生向量请求用量。
+
 ## 开发验证
 
 ```powershell
@@ -284,6 +301,7 @@ npm --prefix web run build:desktop
 .\scripts\audit_openapi_routes.ps1
 .\scripts\build_portable.ps1
 .\scripts\verify_portable.ps1 -StageRoot artifacts\portable\DeepTutor -ZipPath artifacts\DeepTutor-1.7.0-portable-X64.zip -SmokeTest
+node scripts/verify_settings_runtime.mjs
 node scripts/verify_stream_runtime.mjs
 node scripts/verify_provider_routing.mjs
 ```
@@ -318,6 +336,13 @@ Music、Videos 和 Favorites，避免 Windows 文件选择框访问便携 USERPR
 SQLite 写锁等待、落库失败终态和重启事件重放。报告保存在
 `artifacts/stream-runtime-verification/stream-runtime-report.json`。开发验收可使用
 Node，但不会把它打入发行包，也不会读取用户真实凭据或请求外部模型。
+
+`verify_settings_runtime.mjs` 使用最终 EXE、真实静态前端和本地模拟模型，
+检查 37 个设置入口（含伙伴子页面）的页面异常与 HTTP 错误、设置应用与跨页草稿、实际端口、
+模型参数、真实用量落库、历史快照去重、闰年时区以及重启持久化。界面测试
+使用本机 Edge，报告及截图保存在 `artifacts/settings-runtime-verification`。
+可选参数 `--history-db=<数据库绝对路径>` 只读提取历史时间与用量数值，
+匿名复制到隔离实例，并校验原数据库哈希不变；不复制正文、凭据或身份。
 
 ## 发行审计
 
