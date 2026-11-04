@@ -69,8 +69,14 @@ export function ReadingRetrievalSettings({ workspaceId }: { workspaceId?: string
           </div>
         </div>
       )}
+      {settings?.model_available && settings.model && (
+        <p className="mt-2 text-xs">当前检索模型：{settings.model}</p>
+      )}
       {settings?.enabled && !settings.model_available && (
-        <p className="mt-2 text-xs">尚未配置可用向量模型，当前使用关键词检索。请在设置的向量模型页面配置服务。</p>
+        <p className="mt-2 text-xs">
+          {settings.model_error || "尚未配置可用向量模型，请在设置的向量模型页面配置服务。"}
+          {" "}当前使用关键词检索。
+        </p>
       )}
       {index && <p role="status" className="mt-2 text-xs">
         当前资料集索引：{STATUS[index.status] || index.status}

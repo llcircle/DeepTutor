@@ -226,3 +226,17 @@
 - 交付便携 ZIP：artifacts/DeepTutor-1.7.0-portable-X64.zip 及对应 .sha256；ZIP SHA256：9982cd7be158d04010a5c5c5849d876b785f964f256e238298c2ef4d0b66b917。verify_portable.ps1 验证 892 个文件逐文件内容、X64 PE、31 项导入依赖及禁入载荷 0，通过。
 - 统一 build_portable.ps1 完成打包并已自动删除 src-tauri/target。真实用户 data/cache/temp/logs/home 保留；data/deeptutor.sqlite3 与构建前 SHA256 相同（50C746F00275B4ABC3BB13D30B26D0E3F76AF4C0FDF78B282E78D5EE90AF431E）。所有测试使用隔离副本，验收 EXE 进程均已退出。
 - 验收报告：artifacts/reading-hybrid-verification/reading-hybrid-report.json；其余报告位于 pdf-verification、settings-runtime-verification、provider-verification、stream-runtime-verification。已移除本次早期验收脚本多模态正文读取不完整产生的旧失败报告。
+
+## 2026-11-04 10:54:58 +08:00 修复阅读检索误报向量模型未配置
+
+- 用户问题：已保存唯一 bge-m3 向量模型，阅读器仍显示未配置。只读检查实际配置发现模型及提供方、地址、凭据均存在，但 active_profile_id/active_model_id 为 null；原消费端严格依赖默认字段，旧 EXE 可稳定复现。
+- 修复：明确默认项优先；空、空白或缺少默认项时采用唯一模型；多候选要求设为默认。失效默认项、提供方缺失、自定义地址为空显示具体原因，继续使用关联提供方地址，不擅自切换账户，不修改用户保存配置。
+- 阅读设置接口返回 model 和 model_error；界面显示实际检索模型名称。已排队重试显示 queued 并隐藏旧错误。修复配置后重新打开资料集或点击“更新索引”恢复索引，交付采用已验证的明确恢复流程。
+- 验证：Rust release 193/193、前端专项 6/6、Node 1321/1321、TypeScript、配置契约、正式前端构建、Rust 格式及 git diff --check 均通过；局部 ESLint 无错误，12 项中文 JSX 国际化警告。
+- 最终 EXE：阅读/OCR 14 项通过，覆盖空默认字段真实设置保存、失败恢复、多模型歧义、自定义网关、121 页混合索引及第一页定位、人工校正、单页重建、引用重验和重启；模型接口路由 10 项通过；设置保存和用量回归 5 项通过，37 个设置页面均无浏览器或 HTTP 错误。
+- 验收使用隔离的发行 EXE 副本与本地模拟模型服务，未调用真实收费接口，不能据此宣称真实 OCR 或向量模型准确率。客户端单实例保护使首次并行验收中的设置实例正常退出，改为顺序运行后通过。
+- 交付使用 scripts/build_portable.ps1；EXE、便携 ZIP 及 SHA256 同步更新，verify_portable.ps1 的 892 文件逐项哈希、X64 PE、31 项依赖、禁入项检查、25 模块启动冒烟全部通过。
+- EXE：artifacts/portable/DeepTutor/DeepTutor.exe；SHA256：aa4e0b8a571a9b00f3ddb20ad8cf76e3aba6c9402b3b97c2ea1b9f166a45b038。
+- ZIP：artifacts/DeepTutor-1.7.0-portable-X64.zip；SHA256：92ffe00deb4a7f823013d504beb8dda0f2c91b1d5dbf966e3bafb46e7b93839e。
+- 用户 data/cache/temp/logs/home 保留；用户数据库 SHA256 与构建前一致：2189049FF69D0B410B20B71C6E074D5A87B79D5E98A24BAF0A37F64064D3EA41。Cargo target 已自动清理。旧失败报告已移除，旧 EXE 复现日志保留在 .tauri-build-cache/embedding-default-old-exe.txt。
+- 代码状态：可用。分支 codex/reading-hybrid-ocr，本轮完成本地详细提交，不推送。

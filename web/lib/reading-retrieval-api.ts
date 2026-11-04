@@ -16,6 +16,8 @@ export interface RetrievalSettings {
   enabled: boolean;
   consented: boolean;
   model_available: boolean;
+  model?: string | null;
+  model_error?: string | null;
 }
 
 export interface ReadingIndexStatus {

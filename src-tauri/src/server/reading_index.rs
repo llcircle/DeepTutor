@@ -73,7 +73,18 @@ fn enabled(state: &AppState) -> bool {
 
 async fn get_settings(ScopedState(state): ScopedState) -> ApiResult<Json<Value>> {
     let mut value = settings(&state)?;
-    value["model_available"] = json!(config(&state).is_ok());
+    match config(&state) {
+        Ok(config) => {
+            value["model_available"] = json!(true);
+            value["model"] = json!(config.model);
+            value["model_error"] = Value::Null;
+        }
+        Err(error) => {
+            value["model_available"] = json!(false);
+            value["model"] = Value::Null;
+            value["model_error"] = json!(error);
+        }
+    }
     value["strategy"] = json!("page_paragraph_keyword_rrf");
     Ok(Json(value))
 }
@@ -109,14 +120,69 @@ fn config(state: &AppState) -> Result<EmbeddingConfig, String> {
         .database
         .get_setting("catalog")?
         .unwrap_or_else(|| json!({}));
-    let (profile, model) =
-        super::super::catalog::service_selection(&catalog, "embedding", None, None)
-            .ok_or_else(|| "未配置向量模型，继续使用关键词检索。".to_string())?;
-    let model = model.ok_or_else(|| "向量模型配置无效。".to_string())?;
+    config_from_catalog(&catalog)
+}
+
+fn config_from_catalog(catalog: &Value) -> Result<EmbeddingConfig, String> {
+    let service = &catalog["services"]["embedding"];
+    let selection = |field: &str| {
+        service[field]
+            .as_str()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+    };
+    let profile_id = selection("active_profile_id");
+    let model_id = selection("active_model_id");
+    let profiles = service["profiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|profile| profile["provider_only"] != true)
+        .filter(|profile| profile_id.is_none_or(|id| profile["id"] == id))
+        .collect::<Vec<_>>();
+    if profile_id.is_some() && profiles.is_empty() {
+        return Err("默认向量模型的配置已不存在，请在设置 → 向量模型重新设为默认。".into());
+    }
+    let candidates = profiles
+        .iter()
+        .flat_map(|profile| {
+            profile["models"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|model| {
+                    model["model"]
+                        .as_str()
+                        .is_some_and(|name| !name.trim().is_empty())
+                        && model_id.is_none_or(|id| model["id"] == id)
+                })
+                .map(move |model| (*profile, model))
+        })
+        .collect::<Vec<_>>();
+    let (profile, model) = match candidates.as_slice() {
+        [selected] => *selected,
+        [] if model_id.is_some() || profile_id.is_some() => {
+            return Err(
+                "默认向量模型已不存在或模型标识为空，请在设置 → 向量模型检查并重新设为默认。"
+                    .into(),
+            )
+        }
+        [] => return Err("未配置向量模型，继续使用关键词检索。".into()),
+        _ => return Err("已配置多个向量模型，请在设置 → 向量模型将其中一个设为默认。".into()),
+    };
+    // 设置页允许只保存模型；没有默认选择时仅采用唯一模型，不猜测多个账户。
+    // 已指定的默认项失效或提供方引用错误时保留明确错误，不切换到其他服务。
+    let profile = super::super::catalog::resolve_profile_provider(
+        catalog,
+        "embedding",
+        profile,
+        Some(model),
+    )?;
     let name = model["model"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| "向量模型标识为空。".to_string())?
+        .trim()
         .to_string();
     let base = profile["base_url"]
         .as_str()
@@ -399,13 +465,19 @@ fn status(state: &AppState, id: &str) -> ApiResult<Value> {
         .unwrap_or_else(|| json!({"status":"not_indexed","completed_pages":0,"total_pages":0}));
     value["enabled"] = json!(enabled(state));
     value["model_available"] = json!(config(state).is_ok());
-    if value["status"] == "indexing" && !state.reading_index.jobs.lock().contains_key(id) {
+    let has_job = state.reading_index.jobs.lock().contains_key(id);
+    if has_job && value["status"] != "indexing" {
+        value["status"] = json!("queued");
+        // 重试已经排队时，不再把上一次未配置模型的错误显示为当前结果。
+        value.as_object_mut().unwrap().remove("error");
+    } else if value["status"] == "indexing" && !has_job {
         value["status"] = json!("interrupted");
     }
     if let Ok(config) = config(state) {
-        if value["signature"]
-            .as_str()
-            .is_some_and(|s| s != config.signature)
+        if !has_job
+            && value["signature"]
+                .as_str()
+                .is_some_and(|s| s != config.signature)
         {
             value["status"] = json!("stale");
         }
@@ -1010,6 +1082,183 @@ pub(super) async fn search_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn referenced_catalog() -> Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/referenced-catalog.json"))
+            .expect("读取脱敏模型配置")
+    }
+
+    #[test]
+    fn 唯一向量模型无需先设为默认且不修改保存的配置() {
+        for defaults in [Value::Null, json!(""), json!("   ")] {
+            let mut catalog = referenced_catalog();
+            catalog["services"]["embedding"]["active_profile_id"] = defaults.clone();
+            catalog["services"]["embedding"]["active_model_id"] = defaults;
+            let original = catalog.clone();
+            let config = config_from_catalog(&catalog).expect("识别唯一向量模型");
+            assert_eq!(config.model, "bge-m3");
+            assert_eq!(config.endpoint, "https://gateway.example/api/v3/embeddings");
+            assert_eq!(config.profile["api_key"], "fixture-key");
+            assert_eq!(catalog, original);
+        }
+        let mut catalog = referenced_catalog();
+        let service = catalog["services"]["embedding"].as_object_mut().unwrap();
+        service.remove("active_profile_id");
+        service.remove("active_model_id");
+        assert_eq!(config_from_catalog(&catalog).unwrap().model, "bge-m3");
+    }
+
+    #[test]
+    fn 多个模型必须明确选择且已有默认优先() {
+        let mut catalog = referenced_catalog();
+        let second = json!({"id":"other-model","model":"other-embedding"});
+        catalog["services"]["embedding"]["profiles"][0]["models"]
+            .as_array_mut()
+            .unwrap()
+            .push(second);
+        assert!(config_from_catalog(&catalog)
+            .err()
+            .unwrap()
+            .contains("多个向量模型"));
+        catalog["services"]["embedding"]["active_profile_id"] = json!("embedding-profile");
+        assert!(config_from_catalog(&catalog).is_err());
+        catalog["services"]["embedding"]["active_model_id"] = json!("other-model");
+        assert_eq!(
+            config_from_catalog(&catalog).unwrap().model,
+            "other-embedding"
+        );
+        catalog["services"]["embedding"]["active_profile_id"] = Value::Null;
+        assert_eq!(
+            config_from_catalog(&catalog).unwrap().model,
+            "other-embedding"
+        );
+
+        let mut other = catalog["services"]["embedding"]["profiles"][0].clone();
+        other["id"] = json!("other-profile");
+        other["models"] = json!([{"id":"third-model","model":"third-embedding"}]);
+        catalog["services"]["embedding"]["profiles"]
+            .as_array_mut()
+            .unwrap()
+            .push(other);
+        catalog["services"]["embedding"]["active_profile_id"] = json!("other-profile");
+        catalog["services"]["embedding"]["active_model_id"] = Value::Null;
+        assert_eq!(
+            config_from_catalog(&catalog).unwrap().model,
+            "third-embedding"
+        );
+    }
+
+    #[test]
+    fn 默认项失效不擅自回退到其他模型() {
+        for (profile, model) in [
+            (json!("deleted-profile"), Value::Null),
+            (Value::Null, json!("deleted-model")),
+            (json!("embedding-profile"), json!("deleted-model")),
+        ] {
+            let mut catalog = referenced_catalog();
+            catalog["services"]["embedding"]["active_profile_id"] = profile;
+            catalog["services"]["embedding"]["active_model_id"] = model;
+            assert!(config_from_catalog(&catalog)
+                .err()
+                .unwrap()
+                .contains("已不存在"));
+        }
+    }
+
+    #[test]
+    fn 缺失或无效提供方返回真实配置错误() {
+        let mut catalog = referenced_catalog();
+        catalog["connections"] = json!([]);
+        let error = config_from_catalog(&catalog).err().unwrap();
+        assert!(error.contains("提供方已不存在"));
+        assert!(!error.contains("未配置向量模型"));
+
+        let mut catalog = referenced_catalog();
+        catalog["services"]["embedding"]["profiles"][0]["models"][0]["provider_ref"] =
+            json!("invalid");
+        assert!(config_from_catalog(&catalog)
+            .err()
+            .unwrap()
+            .contains("提供方引用无效"));
+
+        let mut catalog = referenced_catalog();
+        catalog["connections"][0]["base_url"] = json!("");
+        assert!(config_from_catalog(&catalog)
+            .err()
+            .unwrap()
+            .contains("地址为空"));
+    }
+
+    #[test]
+    fn 空模型和仅提供方配置不参与唯一模型判断() {
+        let mut catalog = referenced_catalog();
+        catalog["services"]["embedding"]["profiles"][0]["models"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"empty-model","model":"  "}));
+        catalog["services"]["embedding"]["profiles"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"provider-only","provider_only":true,
+                "models":[{"id":"unused","model":"unused"}]}));
+        assert_eq!(config_from_catalog(&catalog).unwrap().model, "bge-m3");
+        catalog["services"]["embedding"]["profiles"][0]["models"] = json!([]);
+        assert!(config_from_catalog(&catalog)
+            .err()
+            .unwrap()
+            .contains("未配置向量模型"));
+    }
+
+    #[tokio::test]
+    async fn 阅读设置返回实际模型和可操作的配置错误() {
+        let (state, _directory) = super::super::tests::pdf_state();
+        let mut catalog = referenced_catalog();
+        state.database.set_setting("catalog", &catalog).unwrap();
+        let result = get_settings(ScopedState(state.clone())).await.unwrap().0;
+        assert_eq!(result["model_available"], true);
+        assert_eq!(result["model"], "bge-m3");
+        assert!(result["model_error"].is_null());
+        assert_eq!(
+            state.database.get_setting("catalog").unwrap().unwrap(),
+            catalog
+        );
+
+        catalog["services"]["embedding"]["profiles"][0]["models"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":"other","model":"other-embedding"}));
+        state.database.set_setting("catalog", &catalog).unwrap();
+        let result = get_settings(ScopedState(state)).await.unwrap().0;
+        assert_eq!(result["model_available"], false);
+        assert!(result["model"].is_null());
+        assert!(result["model_error"]
+            .as_str()
+            .unwrap()
+            .contains("多个向量模型"));
+    }
+
+    #[test]
+    fn 失败后的索引重试排队不继续显示旧错误() {
+        let (state, _directory) = super::super::tests::pdf_state();
+        let workspace = create_workspace_record(&state, "索引重试测试", "", "", &[]).unwrap();
+        let id = workspace["workspace_id"].as_str().unwrap();
+        save_status(
+            &state,
+            id,
+            &json!({"status":"failed","error":"未配置向量模型，继续使用关键词检索。"}),
+        )
+        .unwrap();
+        state.reading_index.jobs.lock().insert(
+            id.to_string(),
+            ("retry".to_string(), CancellationToken::new()),
+        );
+        let result = status(&state, id).unwrap();
+        assert_eq!(result["status"], "queued");
+        assert!(result.get("error").is_none());
+        state.reading_index.jobs.lock().remove(id);
+        assert_eq!(status(&state, id).unwrap()["status"], "failed");
+    }
+
     #[test]
     fn native_embedding_endpoints_keep_gateway_prefixes_without_llm_version() {
         for (base, binding, expected) in [
@@ -1152,7 +1401,7 @@ mod tests {
         });
         state.database.set_setting("catalog",&json!({
             "connections":[{"id":"local","base_url":format!("http://{address}/custom/v3"),"api_key":"local-fixture"}],
-            "services":{"embedding":{"active_profile_id":"profile","active_model_id":"model","profiles":[{
+            "services":{"embedding":{"active_profile_id":null,"active_model_id":null,"profiles":[{
                 "id":"profile","connection_id":"local","binding":"openai","base_url":"https://api.openai.com/v1",
                 "models":[{"id":"model","model":"fixture-embedding"}]
             }]}}

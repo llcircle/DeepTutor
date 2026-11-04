@@ -45,6 +45,30 @@ describe("阅读检索与 OCR 人工审核", () => {
     await waitFor(() => expect(api.save).toHaveBeenCalledWith(true, true, "workspace-1"));
   });
 
+  it("已配置但未设默认的唯一模型显示真实名称并允许更新索引", async () => {
+    api.settings.mockResolvedValue({
+      enabled: true, consented: true, model_available: true, model: "bge-m3", model_error: null,
+    });
+    render(<ReadingRetrievalSettings workspaceId="workspace-1" />);
+    expect(await screen.findByText("当前检索模型：bge-m3")).toBeInTheDocument();
+    expect(screen.queryByText(/尚未配置可用向量模型/)).not.toBeInTheDocument();
+    const update = screen.getByRole("button", { name: "更新索引" });
+    expect(update).not.toBeDisabled();
+    fireEvent.click(update);
+    await waitFor(() => expect(api.rebuild).toHaveBeenCalledWith("workspace-1"));
+  });
+
+  it("多个模型或提供方错误显示真实原因而不是统一提示未配置", async () => {
+    api.settings.mockResolvedValue({
+      enabled: true, consented: true, model_available: false, model: null,
+      model_error: "已配置多个向量模型，请在设置 → 向量模型将其中一个设为默认。",
+    });
+    render(<ReadingRetrievalSettings workspaceId="workspace-1" />);
+    expect(await screen.findByText(/已配置多个向量模型/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "更新索引" })).toBeDisabled();
+    expect(screen.queryByText(/尚未配置可用向量模型/)).not.toBeInTheDocument();
+  });
+
   it("仅在用户点击确认后保存可编辑文本和当前版本", async () => {
     const applied = vi.fn().mockResolvedValue(undefined);
     render(<ReadingOcrReview materialId="material-1" revision={1} locator={1} onApplied={applied} onJump={vi.fn()} />);

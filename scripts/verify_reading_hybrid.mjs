@@ -60,6 +60,7 @@ const mock = createServer(async (request, response) => {
     }
     response.writeHead(200, { "Content-Type": "application/json" });
     if (request.url === "/custom/v3/embeddings") {
+      assert.equal(body.model, "bge-m3", "使用设置中保存的向量模型");
       assert(!("dimensions" in body));
       const data = body.input.map((text, index) => ({
         index, embedding: /quantum|microscopic|particles/i.test(text) ? [1, 0.05, 0.01] : [0.05, 1, 0.01],
@@ -170,11 +171,16 @@ try {
   catalog.connections[0].base_url = `http://127.0.0.1:${mock.address().port}/custom/v3`;
   catalog.connections[0].api_key = "local-reading-fixture";
   for (const service of ["llm", "embedding"]) {
-    catalog.services[service].active_profile_id = catalog.services[service].profiles[0].id;
-    catalog.services[service].active_model_id = catalog.services[service].profiles[0].models[0].id;
+    // 向量模型保留真实设置页允许保存的空默认项，避免测试掩盖配置识别故障。
+    if (service === "llm") {
+      catalog.services[service].active_profile_id = catalog.services[service].profiles[0].id;
+      catalog.services[service].active_model_id = catalog.services[service].profiles[0].models[0].id;
+    }
     catalog.services[service].profiles[0].base_url = "https://api.openai.com/v1";
   }
-  await api("/settings/catalog", catalog, "PUT");
+  const noEmbedding = structuredClone(catalog);
+  noEmbedding.services.embedding.profiles = [];
+  await api("/settings/catalog", noEmbedding, "PUT");
   await api("/settings/ui", { language: "zh", response_language: "zh" }, "PUT");
   await api("/settings/tour/complete", {}, "POST");
   const bytes = pdf(["quantum mechanics wr0ng evidence", ...Array.from({ length: 120 }, (_, i) => `gardening soil physical page ${i + 2}`)]);
@@ -199,7 +205,45 @@ try {
   assert.equal(rejected.status, 400);
   checks.push("默认关键词检索，首次开启必须明确确认文本发送");
   await api("/reading/retrieval/settings", { enabled: true, consented: true, workspace_id: workspaceId }, "PUT");
+  for (let i = 0; i < 80; i++) {
+    const status = await api(`/reading/workspaces/${workspaceId}/index`);
+    if (status.status === "failed") {
+      assert(status.error.includes("未配置向量模型"));
+      break;
+    }
+    assert(i < 79, "未配置模型时没有返回预期索引状态");
+    await delay(100);
+  }
+  await api("/settings/apply", { catalog });
+  const detected = await api("/reading/retrieval/settings");
+  assert.equal(detected.model_available, true, "已保存的唯一向量模型无需先设为默认");
+  assert.equal(detected.model, "bge-m3");
+  assert.equal(detected.model_error, null);
+  const saved = await api("/settings/catalog");
+  assert.equal(saved.services.embedding.active_profile_id, null);
+  assert.equal(saved.services.embedding.active_model_id, null);
+  checks.push("通过设置应用保存唯一 bge-m3，默认项为空时正确识别，不修改原配置");
+  await api(`/reading/workspaces/${workspaceId}`);
   await waitReady(workspaceId);
+  checks.push("从未配置造成的索引失败恢复，重新打开资料集即可正常建立索引");
+  const multiple = structuredClone(catalog);
+  multiple.services.embedding.profiles[0].models.push({ id: "other-embedding", model: "other-embedding" });
+  await api("/settings/apply", { catalog: multiple });
+  const ambiguous = await api("/reading/retrieval/settings");
+  assert.equal(ambiguous.model_available, false);
+  assert(ambiguous.model_error.includes("多个向量模型"));
+  const countBeforeAmbiguous = requests.filter(r => r.url.endsWith("/embeddings")).length;
+  const fallback = await api(`/reading/workspaces/${workspaceId}/search`, { query: "quantum" });
+  assert.equal(fallback.mode, "keyword");
+  assert.equal(requests.filter(r => r.url.endsWith("/embeddings")).length, countBeforeAmbiguous);
+  multiple.services.embedding.active_profile_id = multiple.services.embedding.profiles[0].id;
+  multiple.services.embedding.active_model_id = multiple.services.embedding.profiles[0].models[0].id;
+  await api("/settings/apply", { catalog: multiple });
+  assert.equal((await api("/reading/retrieval/settings")).model, "bge-m3");
+  await api("/settings/apply", { catalog });
+  await api(`/reading/workspaces/${workspaceId}`);
+  await waitReady(workspaceId);
+  checks.push("多个模型不擅自选择或发送请求，设为默认后准确采用指定模型");
   const result = await api(`/reading/workspaces/${workspaceId}/search`, { query: "microscopic particles", limit: 4 });
   assert.equal(result.mode, "hybrid");
   assert.equal(result.hits[0].locator, 1);
@@ -237,6 +281,15 @@ try {
     window.dispatchEvent(new PopStateEvent("popstate"));
   }, `/learning/reading/${workspaceId}`);
   await page.locator('[data-reader-unit="1"] canvas').first().waitFor({ state: "visible", timeout: 60_000 });
+  const retrievalToggle = page.getByText("阅读检索设置与索引状态", { exact: true });
+  await retrievalToggle.click();
+  const retrieval = page.getByRole("region", { name: "阅读混合检索" });
+  await expect(retrieval).toContainText("当前检索模型：bge-m3");
+  await expect(retrieval).not.toContainText("尚未配置可用向量模型");
+  await expect(retrieval.getByRole("button", { name: "更新索引" })).toBeEnabled();
+  await page.screenshot({ path: path.join(output, "embedding-model-recognized.png"), fullPage: true });
+  await retrievalToggle.click();
+  checks.push("实际阅读界面显示 bge-m3，更新索引可用且不再误报未配置");
   const review = page.getByRole("complementary", { name: "OCR 校正审核" });
   await review.getByRole("button", { name: /OCR 校正建议/ }).click();
   const editor = review.getByRole("textbox", { name: "校正后的完整页文本" });
