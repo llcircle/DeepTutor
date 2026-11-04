@@ -58,6 +58,20 @@ describe("阅读检索与 OCR 人工审核", () => {
     await waitFor(() => expect(api.rebuild).toHaveBeenCalledWith("workspace-1"));
   });
 
+  it("限流等待显示进度和自动继续提示而不是建立失败", async () => {
+    api.settings.mockResolvedValue({ enabled: true, consented: true, model_available: true, model: "bge-m3" });
+    api.index.mockResolvedValue({
+      status: "waiting", completed_pages: 3, total_pages: 16,
+      wait_reason: "向量服务限流（HTTP 429），降速后自动继续",
+      retry_at: "2026-11-04T04:00:00Z",
+    });
+    render(<ReadingRetrievalSettings workspaceId="workspace-1" />);
+    expect(await screen.findByRole("status")).toHaveTextContent("等待向量服务");
+    expect(screen.getByRole("status")).toHaveTextContent("3/16 页");
+    expect(screen.getByText(/降速后自动继续/)).toBeInTheDocument();
+    expect(screen.queryByText(/建立失败/)).not.toBeInTheDocument();
+  });
+
   it("多个模型或提供方错误显示真实原因而不是统一提示未配置", async () => {
     api.settings.mockResolvedValue({
       enabled: true, consented: true, model_available: false, model: null,

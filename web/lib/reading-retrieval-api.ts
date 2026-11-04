@@ -21,11 +21,13 @@ export interface RetrievalSettings {
 }
 
 export interface ReadingIndexStatus {
-  status: "not_indexed" | "queued" | "indexing" | "ready" | "failed" | "stale" | "cancelled" | "interrupted";
+  status: "not_indexed" | "queued" | "indexing" | "waiting" | "ready" | "failed" | "stale" | "cancelled" | "interrupted";
   completed_pages?: number;
   total_pages?: number;
   model?: string;
   error?: string;
+  wait_reason?: string;
+  retry_at?: string | null;
 }
 
 export interface OcrCorrection {

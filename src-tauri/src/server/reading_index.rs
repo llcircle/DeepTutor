@@ -3,9 +3,14 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[path = "reading_embedding.rs"]
+mod embedding;
+use embedding::embed;
+
 #[derive(Default)]
 pub(crate) struct IndexRuntime {
     gate: tokio::sync::Mutex<()>,
+    requests: embedding::RequestRuntime,
     jobs: parking_lot::Mutex<HashMap<String, (String, CancellationToken)>>,
     cache: parking_lot::Mutex<HashMap<String, Arc<Vec<VectorRow>>>>,
     dirty: parking_lot::Mutex<HashSet<String>>,
@@ -279,84 +284,6 @@ fn normalize(mut vector: Vec<f32>) -> Result<Vec<f32>, String> {
     Ok(vector)
 }
 
-async fn embed(
-    state: &AppState,
-    config: &EmbeddingConfig,
-    texts: &[String],
-    query: bool,
-    cancel: &CancellationToken,
-) -> Result<Vec<Vec<f32>>, String> {
-    let mut all = Vec::new();
-    let mut dimension = None;
-    for batch in texts.chunks(32) {
-        let body = if config.binding == "cohere" {
-            json!({"model":config.model,"texts":batch,"input_type":if query {"search_query"} else {"search_document"},"embedding_types":["float"]})
-        } else {
-            json!({"model":config.model,"input":batch})
-        };
-        let mut attempt = 0u32;
-        let payload = loop {
-            if cancel.is_cancelled() {
-                return Err("向量任务已取消。".into());
-            }
-            let mut request = state
-                .client
-                .post(&config.endpoint)
-                .timeout(Duration::from_secs(60))
-                .json(&body);
-            if let Some(key) = config.profile["api_key"]
-                .as_str()
-                .filter(|s| !s.is_empty() && *s != "********")
-            {
-                request = request.bearer_auth(key);
-            }
-            for (name, value) in super::super::catalog::extra_headers(&config.profile) {
-                request = request.header(name, value);
-            }
-            let response = tokio::select! {
-                _ = cancel.cancelled() => return Err("向量任务已取消。".into()),
-                response = request.send() => response.map_err(|e| format!("无法连接配置的向量服务：{e}"))?
-            };
-            if (response.status().as_u16() == 429 || response.status().is_server_error())
-                && attempt < 3
-            {
-                attempt += 1;
-                tokio::select! {
-                    _ = cancel.cancelled() => return Err("向量任务已取消。".into()),
-                    _ = tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))) => {}
-                }
-                continue;
-            }
-            if !response.status().is_success() {
-                return Err(format!(
-                    "向量服务返回 HTTP {}，已保留关键词检索。",
-                    response.status()
-                ));
-            }
-            if response.content_length().unwrap_or(0) > 32 * 1024 * 1024 {
-                return Err("向量响应超过 32 MB 限制。".into());
-            }
-            let bytes = tokio::select! {
-                _ = cancel.cancelled() => return Err("向量任务已取消。".into()),
-                bytes = response.bytes() => bytes.map_err(|e| format!("无法读取向量响应：{e}"))?
-            };
-            if bytes.len() > 32 * 1024 * 1024 {
-                return Err("向量响应超过 32 MB 限制。".into());
-            }
-            break serde_json::from_slice::<Value>(&bytes)
-                .map_err(|_| "向量服务返回无效 JSON。".to_string())?;
-        };
-        let vectors = decode_vectors(&payload, batch.len())?;
-        let size = vectors.first().map(Vec::len).unwrap_or(0);
-        if dimension.is_some_and(|d| d != size) {
-            return Err("向量服务在不同批次返回了不同维度。".into());
-        }
-        dimension = Some(size);
-        all.extend(vectors);
-    }
-    Ok(all)
-}
-
 fn chunks(text: &str) -> Vec<Chunk> {
     let chars = text.chars().collect::<Vec<_>>();
     if text.trim().is_empty() {
@@ -466,11 +393,11 @@ fn status(state: &AppState, id: &str) -> ApiResult<Value> {
     value["enabled"] = json!(enabled(state));
     value["model_available"] = json!(config(state).is_ok());
     let has_job = state.reading_index.jobs.lock().contains_key(id);
-    if has_job && value["status"] != "indexing" {
+    if has_job && !matches!(value["status"].as_str(), Some("indexing" | "waiting")) {
         value["status"] = json!("queued");
         // 重试已经排队时，不再把上一次未配置模型的错误显示为当前结果。
         value.as_object_mut().unwrap().remove("error");
-    } else if value["status"] == "indexing" && !has_job {
+    } else if matches!(value["status"].as_str(), Some("indexing" | "waiting")) && !has_job {
         value["status"] = json!("interrupted");
     }
     if let Ok(config) = config(state) {
@@ -542,12 +469,17 @@ pub(super) fn schedule(state: &AppState, id: &str) {
     tokio::spawn(async move {
         let _guard = state.reading_index.gate.lock().await;
         if let Err(error) = build(&state, &id, &cancel).await {
-            let _ = save_status(
-                &state,
-                &id,
-                &json!({"status":if cancel.is_cancelled() {"cancelled"} else {"failed"},
-                "error":error.to_string(), "updated_at":crate::storage::now()}),
-            );
+            let mut value = status(&state, &id).unwrap_or_else(|_| json!({}));
+            value["status"] = json!(if cancel.is_cancelled() {
+                "cancelled"
+            } else {
+                "failed"
+            });
+            value["error"] = json!(error.to_string());
+            value["updated_at"] = json!(crate::storage::now());
+            value.as_object_mut().unwrap().remove("retry_at");
+            value.as_object_mut().unwrap().remove("wait_reason");
+            let _ = save_status(&state, &id, &value);
         }
         let mut jobs = state.reading_index.jobs.lock();
         if jobs.get(&id).is_some_and(|(current, _)| current == &job_id) {
@@ -573,19 +505,8 @@ async fn rebuild(
         ));
     }
     config(&state).map_err(ApiError::bad_request)?;
-    {
-        let _guard = state.reading_index.gate.lock().await;
-        let connection = state.database.connect()?;
-        for material in member_ids(&state, &id)? {
-            connection
-                .execute(
-                    "DELETE FROM reading_vectors WHERE material_id=?1",
-                    [material],
-                )
-                .map_err(db_error)?;
-        }
-        invalidate(&state);
-    }
+    // 保留已完成且签名、页文本未变化的向量，限流后从断点继续，避免重复发送整本资料。
+    invalidate(&state);
     state.reading_index.dirty.lock().insert(id.clone());
     schedule(&state, &id);
     Ok(Json(json!({"status":"queued"})))
@@ -656,7 +577,7 @@ async fn build(state: &AppState, id: &str, cancel: &CancellationToken) -> ApiRes
             if !existing && !text.trim().is_empty() {
                 let mut parts = chunks(text);
                 let inputs = parts.iter().map(|p| p.text.clone()).collect::<Vec<_>>();
-                let mut vectors = embed(state, &config, &inputs, false, cancel)
+                let mut vectors = embed(state, &config, &inputs, false, cancel, Some(id))
                     .await
                     .map_err(ApiError::provider)?;
                 if !parts.iter().any(|p| p.kind == "page") {
@@ -904,7 +825,7 @@ pub(super) async fn search(
                     })
                     .collect::<Vec<_>>();
                 if !valid.is_empty() {
-                    match embed(state, &config, &[query.to_string()], true, cancel).await {
+                    match embed(state, &config, &[query.to_string()], true, cancel, None).await {
                         Ok(query_vectors) => {
                             let q = &query_vectors[0];
                             for (kind, count, weight) in [("page", 12, 1.0), ("paragraph", 32, 1.2)]
@@ -1439,6 +1360,21 @@ mod tests {
             .unwrap();
         build(&state, id, &CancellationToken::new()).await.unwrap();
         assert_eq!(requests.lock().len(), 2, "每页一个批次");
+        rebuild(ScopedState(state.clone()), AxumPath(id.to_string()))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.reading_index.jobs.lock().contains_key(id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("增量更新应快速完成");
+        assert_eq!(
+            requests.lock().len(),
+            2,
+            "更新索引不得删除或重复请求已完成页面"
+        );
         let result = search(
             &state,
             id,

@@ -128,8 +128,9 @@ async function api(endpoint, body, method = body === undefined ? "GET" : "POST")
   return response.json();
 }
 async function waitReady(workspace) {
-  for (let i = 0; i < 240; i++) {
+  for (let i = 0; i < 1600; i++) {
     const status = await api(`/reading/workspaces/${workspace}/index`);
+    if (i % 80 === 0) console.log(`索引验收进度：${status.status}，${status.completed_pages ?? 0}/${status.total_pages ?? 0} 页`);
     if (status.status === "ready") return status;
     assert(!["failed", "cancelled"].includes(status.status), JSON.stringify(status));
     await delay(250);
@@ -339,7 +340,7 @@ try {
   assert.equal(degraded.hits[0].locator, 1);
   assert(degraded.warning.includes("503"));
   embeddingFailure = false;
-  checks.push("向量网关返回 503 时有限重试并降级，关键词仍能定位校正后的第一页");
+  checks.push("向量网关返回 503 时对话立即降级，关键词仍能定位校正后的第一页");
   await api("/reading/retrieval/settings", { enabled: false }, "PUT");
   assert.equal((await api(`/reading/workspaces/${workspaceId}/search`, { query: "confirmed" })).mode, "keyword");
   checks.push("重启后版本与校正保留，关闭向量后关键词检索继续工作");

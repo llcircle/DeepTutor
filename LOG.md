@@ -240,3 +240,18 @@
 - ZIP：artifacts/DeepTutor-1.7.0-portable-X64.zip；SHA256：92ffe00deb4a7f823013d504beb8dda0f2c91b1d5dbf966e3bafb46e7b93839e。
 - 用户 data/cache/temp/logs/home 保留；用户数据库 SHA256 与构建前一致：2189049FF69D0B410B20B71C6E074D5A87B79D5E98A24BAF0A37F64064D3EA41。Cargo target 已自动清理。旧失败报告已移除，旧 EXE 复现日志保留在 .tauri-build-cache/embedding-default-old-exe.txt。
 - 代码状态：可用。分支 codex/reading-hybrid-ocr，本轮完成本地详细提交，不推送。
+
+## 2026-11-04 12:27:54 +08:00 向量服务 429 限流修复与正式交付
+
+- 分支：`codex/reading-hybrid-ocr`；基线：`7a87150c`；状态：代码可用，正式 EXE、便携 ZIP 与 SHA256 已同步更新。
+- 根因：原阅读向量请求无正常节流，429 仅按 0.5/1/2 秒重试且忽略 Retry-After，索引与查询不共享限速；更新索引会删除已完成向量，失败状态丢失完成进度。
+- 修复：抽出 Rust 阅读向量请求模块；同地址、凭据及额外请求头共用串行节流器，正常间隔至少两秒。429 后间隔加倍至最高 30 秒，按 5/10/20/40 秒退避，最多额外重试四次，并遵守秒数或 HTTP 日期形式的 Retry-After；5xx 最多额外重试三次。
+- 对话查询不重试 429/5xx，服务冷却时保留关键词检索；等待状态显示原因、预计继续时间与完整页进度，支持取消。索引改为增量补建，失败保留已完成页面，只补缺失、文本或模型签名变化的页面。
+- 开发检查：Rust 199/199；前端专项 7/7；Node 1321/1321；TypeScript、配置契约、Rust 格式、脚本语法及差异空白检查通过。局部 ESLint 零错误，12 项现有中文 JSX 国际化警告。
+- 最终 EXE：限流验收 7 项、121 页混合检索/OCR 回归 14 项、设置运行验收 5 项及 37 个设置页面、提供方路由 10 项全部通过；限流实测退避约 5.023/10.026/20.034/40.029 秒。
+- 最终便携启动冒烟：WebView/Rust 服务、25 个模块接口、安装目录数据与 7 个用户文件夹通过；X64 PE、31 项依赖、ZIP 的 892 个文件清单/内容/SHA256 一致，禁入载荷为零。
+- 交付 EXE：`artifacts/portable/DeepTutor/DeepTutor.exe`；SHA256：`b3ced314abdfa758dba7b34c9bded5656d12ff2acb5a67417f01c83eab40f613`。
+- 交付 ZIP：`artifacts/DeepTutor-1.7.0-portable-X64.zip`；SHA256：`fae2cb73bc1b902dd613c1079ad9267e43574d1b9c9a6c81ea9e05bc8380e011`；同名 `.zip.sha256` 已更新。
+- 四份最终验收报告中的程序哈希均与交付 EXE 一致，`portable-package` 内 EXE 也一致。`data/deeptutor.sqlite3` 与本轮构建前快照哈希一致：`18A38077E09623E4D38C178860B5E1BDDB1FE5D8CD19AF638A860D0212E0FD41`；用户 data/cache/temp/logs/home 保留。
+- 验收均使用隔离的本地模拟模型服务，未调用用户真实付费接口；不代表真实服务配额或模型识别质量已验证。持续 429 仍可能由提供方额度限制引起。
+- 标准 `build_portable.ps1` 已自动删除 `src-tauri/target`，所有验收进程已退出。本轮仅本地提交，不推送。

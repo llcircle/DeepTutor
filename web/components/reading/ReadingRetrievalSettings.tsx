@@ -7,7 +7,7 @@ import {
 } from "@/lib/reading-retrieval-api";
 
 const STATUS: Record<ReadingIndexStatus["status"], string> = {
-  not_indexed: "尚未建立", queued: "等待处理", indexing: "正在建立", ready: "已就绪",
+  not_indexed: "尚未建立", queued: "等待处理", indexing: "正在建立", waiting: "等待向量服务", ready: "已就绪",
   failed: "建立失败", stale: "模型已改变，需更新", cancelled: "已取消", interrupted: "上次任务中断",
 };
 
@@ -84,6 +84,10 @@ export function ReadingRetrievalSettings({ workspaceId }: { workspaceId?: string
         {index.model && ` · ${index.model}`}
       </p>}
       {index?.error && <p className="mt-1 text-xs text-[var(--destructive)]">{index.error}</p>}
+      {index?.status === "waiting" && <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+        {index.wait_reason || "正在降速等待，完成后自动继续。"}
+        {index.retry_at && ` · 预计 ${new Date(index.retry_at).toLocaleTimeString()} 继续`}
+      </p>}
       {workspaceId && (
         <div className="mt-2 flex gap-4 text-xs">
           <button type="button" disabled={busy || !settings?.enabled || !settings.model_available}
