@@ -214,7 +214,7 @@ export async function asJsonOrThrow(response: Response): Promise<any> {
     let detail = `${response.status} ${response.statusText}`;
     try {
       const body = await response.json();
-      if (body?.detail) detail = String(body.detail);
+      detail = messageFromBody(body, detail);
     } catch {
       /* the body was not JSON; the status line is all we have */
     }

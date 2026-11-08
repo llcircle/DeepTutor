@@ -160,6 +160,30 @@ it("keeps edits across pages, saves a real draft, and applies every page from on
   expect(stored).toBeNull();
 });
 
+it("一个分区失败不阻断其他设置和模型保存且跨重启保留失败草稿", async () => {
+  stored = { catalog: live, extensions: { capabilities: { chat: { max_rounds: 330 } }, workspace: { path: "/valid-change" } } };
+  const originalFetch = mocks.fetch.getMockImplementation()!;
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === "/api/capabilities/settings" && init?.method === "PUT") {
+      return reply({ message: "capability_settings.chat.max_rounds 必须为 1–50 之间的整数，当前值为 330" }, false);
+    }
+    return originalFetch(url, init);
+  });
+  const view = render(<App page="" />);
+  await ready();
+  await act(() => settings.applyCatalog());
+  expect(resources.workspace.path).toBe("/valid-change");
+  expect(mocks.fetch.mock.calls.some(([url, init]) => url === "/api/settings/apply" && init?.method === "POST")).toBe(true);
+  expect(stored.extensions).toEqual({ capabilities: { chat: { max_rounds: 330 } } });
+  expect(settings.toast).toContain("330");
+  expect(settings.toast).toContain("1–50");
+  view.unmount();
+  render(<App page="" />);
+  await ready();
+  expect(settings.pendingExtensionPayload("capabilities")).toEqual({ chat: { max_rounds: 330 } });
+  expect(settings.pendingExtensionPayload("workspace")).toBeUndefined();
+});
+
 it("restores a stored draft on remount, and Discard restores the live value without a write", async () => {
   const view = render(<App />);
   await ready();

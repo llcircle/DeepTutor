@@ -123,6 +123,7 @@ pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
+    pub arguments_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -131,6 +132,16 @@ pub struct LlmResponse {
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
     pub usage: LlmUsage,
+    pub finish_reason: Option<String>,
+}
+
+impl LlmResponse {
+    pub fn output_truncated(&self) -> bool {
+        matches!(
+            self.finish_reason.as_deref(),
+            Some("length" | "max_tokens" | "max_output_tokens")
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -272,6 +283,9 @@ where
             append_top_level_text(&mut result, &value, on_chunk);
             return Ok(true);
         };
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            result.finish_reason = Some(reason.to_string());
+        }
         if let Some(delta) = choice.get("delta") {
             append_content_value(
                 &mut result,
@@ -452,8 +466,19 @@ where
                     call.arguments.push_str(text);
                 }
             }
-            "response.completed" | "" => {
+            "response.completed" | "response.incomplete" | "" => {
                 let response = value.get("response").unwrap_or(&value);
+                if response["status"] == "incomplete" || event_type == "response.incomplete" {
+                    result.finish_reason = Some(
+                        response
+                            .pointer("/incomplete_details/reason")
+                            .and_then(Value::as_str)
+                            .unwrap_or("incomplete")
+                            .to_string(),
+                    );
+                } else if response["status"] == "completed" || event_type == "response.completed" {
+                    result.finish_reason = Some("stop".to_string());
+                }
                 let text = response
                     .get("output")
                     .and_then(Value::as_array)
@@ -633,6 +658,9 @@ where
                 }
             }
             "message_delta" => {
+                if let Some(reason) = value.pointer("/delta/stop_reason").and_then(Value::as_str) {
+                    result.finish_reason = Some(reason.to_string());
+                }
                 if let Some(usage) = value.get("usage").and_then(parse_anthropic_usage) {
                     result.usage.merge(&usage);
                     on_chunk(LlmChunk::Usage(usage));
@@ -786,15 +814,31 @@ where
     calls
         .into_values()
         .filter(|call| !call.name.trim().is_empty())
-        .map(|call| ToolCall {
-            id: if call.id.trim().is_empty() {
-                format!("call_{}", uuid::Uuid::new_v4().simple())
+        .map(|call| {
+            let parsed = if call.arguments.trim().is_empty() {
+                Ok(json!({}))
             } else {
-                call.id
-            },
-            name: call.name,
-            arguments: serde_json::from_str(call.arguments.trim())
-                .unwrap_or_else(|_| json!({"_raw": call.arguments})),
+                serde_json::from_str::<Value>(call.arguments.trim())
+            };
+            let arguments_error = match &parsed {
+                Ok(value) if value.is_object() => None,
+                Ok(_) => Some("工具参数必须是 JSON 对象。".to_string()),
+                Err(error) => Some(format!(
+                    "工具参数 JSON 不完整或格式错误（第 {} 行，第 {} 列），未执行工具。",
+                    error.line(),
+                    error.column()
+                )),
+            };
+            ToolCall {
+                id: if call.id.trim().is_empty() {
+                    format!("call_{}", uuid::Uuid::new_v4().simple())
+                } else {
+                    call.id
+                },
+                name: call.name,
+                arguments: parsed.unwrap_or_else(|_| json!({"_raw": call.arguments})),
+                arguments_error,
+            }
         })
         .collect()
 }
@@ -1442,6 +1486,44 @@ mod tests {
             .expect("保留完整接口地址"),
             "https://example.test/v1/chat/completions"
         );
+    }
+
+    #[tokio::test]
+    async fn 三种协议均保留输出截断原因且不修补损坏参数() {
+        let (chat, _) = mock_completion(json!({"choices":[{"message":{"tool_calls":[{
+            "id":"broken", "function":{"name":"write_note", "arguments":"{\"title\":\"笔记\",\"content\":\"未完"}
+        }]},"finish_reason":"length"}]}).to_string(), ApiFormat::OpenAiChat).await;
+        assert!(chat.output_truncated());
+        assert!(chat.tool_calls[0]
+            .arguments_error
+            .as_deref()
+            .unwrap()
+            .contains("JSON"));
+        assert!(chat.tool_calls[0].arguments.get("content").is_none());
+        let (responses, _) = mock_completion(format!("data: {}\n\n", json!({
+            "type":"response.incomplete", "response": {"status":"incomplete",
+            "incomplete_details":{"reason":"max_output_tokens"},
+            "output":[{"type":"message", "content":[{"type":"output_text","text":"未完正文"}]}]}
+        })), ApiFormat::OpenAiResponses).await;
+        assert!(responses.output_truncated());
+        assert_eq!(responses.content, "未完正文");
+        let (anthropic, _) = mock_completion(
+            format!(
+                "data: {}\n\n",
+                json!({
+                    "type":"message_delta", "delta":{"stop_reason":"max_tokens"}
+                })
+            ),
+            ApiFormat::Anthropic,
+        )
+        .await;
+        assert!(anthropic.output_truncated());
+        let (complete, _) = mock_completion(
+            json!({"choices":[{"message":{"content":"完成"},"finish_reason":"stop"}]}).to_string(),
+            ApiFormat::OpenAiChat,
+        )
+        .await;
+        assert!(!complete.output_truncated());
     }
 
     #[test]

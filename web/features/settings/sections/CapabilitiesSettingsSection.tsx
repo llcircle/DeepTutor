@@ -7,6 +7,8 @@ import { useTranslation } from "react-i18next";
 import { apiFetch, apiUrl } from "@/lib/api";
 import { requireSettingsResponse } from "@/lib/settings-response";
 import { EXTENSION_ENDPOINTS } from "@/lib/settings-extensions";
+import { capabilitySettingsErrors } from "@/lib/capability-settings-validation";
+import { asJsonOrThrow } from "@/shared/api/client";
 import {
   SettingRow,
   SettingSection,
@@ -143,19 +145,14 @@ export default function CapabilitiesSettingsPage() {
   const save = useCallback(async () => {
     const current = settingsRef.current;
     if (!current) return;
+    const errors = capabilitySettingsErrors(current);
+    if (errors.length) throw new Error(errors.join("；"));
     const res = await apiFetch(apiUrl(EXTENSION_ENDPOINTS.capabilities), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(current),
     });
-    if (!res.ok) {
-      throw new Error(
-        t("Failed to save capability settings (HTTP {{status}})", {
-          status: res.status,
-        }),
-      );
-    }
-    const data: unknown = await res.json();
+    const data: unknown = await asJsonOrThrow(res);
     if (!isValidCapabilitiesDTO(data)) {
       throw new Error(t("Backend returned an unexpected payload after save."));
     }
@@ -290,6 +287,11 @@ export default function CapabilitiesSettingsPage() {
         title={t("Capabilities")}
         description={t("Per-capability LLM parameters and runtime knobs.")}
       />
+      {capabilitySettingsErrors(settings).length > 0 && (
+        <div role="alert" className="mx-6 my-3 rounded-md border border-red-400 p-3 text-sm text-red-600">
+          {capabilitySettingsErrors(settings).map(error => <div key={error}>{error}</div>)}
+        </div>
+      )}
 
       <SettingSection
         title={t("Chat")}
@@ -573,6 +575,7 @@ function NumberRow({
   step = 1,
   isFloat = false,
 }: NumberRowProps) {
+  const invalid = !Number.isFinite(value) || (min !== undefined && value < min) || (max !== undefined && value > max) || (!isFloat && !Number.isInteger(value));
   return (
     <SettingRow
       title={label}
@@ -580,14 +583,16 @@ function NumberRow({
       control={
         <input
           type="number"
-          value={value}
+          aria-label={label}
+          aria-invalid={invalid}
+          value={Number.isFinite(value) ? value : ""}
           min={min}
           max={max}
           step={step}
           onChange={(e) => {
             const raw = e.target.value;
-            if (raw === "") return;
-            const n = isFloat ? parseFloat(raw) : parseInt(raw, 10);
+            if (raw === "") { onChange(Number.NaN); return; }
+            const n = Number(raw);
             if (!Number.isNaN(n)) onChange(n);
           }}
           className="w-28 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-right text-[12px] outline-none focus:border-[var(--primary)]"

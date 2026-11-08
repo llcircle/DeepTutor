@@ -527,11 +527,27 @@ async fn apply_settings_payload(state: &AppState, body: Value) -> ApiResult<Json
                 .set_setting(&format!("extension:{key}"), value)?;
         }
     }
-    state.database.set_setting("settings_draft", &Value::Null)?;
+    // 分区应用时保留尚未确认的扩展草稿，防止其他分区失败或进程中断时丢失。
+    let remaining_draft = if body["preserve_draft"] == true {
+        state
+            .database
+            .get_setting("settings_draft")?
+            .filter(Value::is_object)
+            .map(|mut draft| {
+                draft["catalog"] = Value::Null;
+                draft
+            })
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    state
+        .database
+        .set_setting("settings_draft", &remaining_draft)?;
     Ok(Json(json!({
         "ok": true,
         "catalog": catalog,
-        "draft": Value::Null
+        "draft": remaining_draft
     })))
 }
 

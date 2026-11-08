@@ -102,10 +102,57 @@ pub(super) fn title(content: &str) -> String {
         .unwrap_or_else(|| "阅读整理文档".to_string())
 }
 
+/// 仅消除续写边界的重复原文，不对反斜杠、公式或 Markdown 进行反转义。
+pub(super) fn append_part(content: &mut String, part: &str) -> bool {
+    if !content.is_empty() {
+        if let Some(suffix) = part.strip_prefix(content.as_str()) {
+            if suffix.trim().is_empty() {
+                return false;
+            }
+            content.push_str(suffix);
+            return true;
+        }
+    }
+    if part.trim().is_empty() || (!content.is_empty() && content.ends_with(part)) {
+        return false;
+    }
+    let tail_start = content
+        .char_indices()
+        .rev()
+        .nth(2048)
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let tail = &content[tail_start..];
+    let overlap = part
+        .char_indices()
+        .map(|(i, _)| i)
+        .filter(|&i| i >= 16 && i <= tail.len())
+        .filter(|&i| tail.ends_with(&part[..i]))
+        .max()
+        .unwrap_or(0);
+    content.push_str(&part[overlap..]);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn 续写保持公式转义并消除边界重复且拒绝无进展() {
+        let mut content =
+            String::from("# 资料\n\n公式 $\\sigma$，中文边界处这是一段足够长的原始重复内容");
+        assert!(append_part(
+            &mut content,
+            "中文边界处这是一段足够长的原始重复内容\n下一节 $\\times$"
+        ));
+        assert_eq!(content.matches("中文边界处").count(), 1);
+        assert!(content.contains("$\\sigma$"));
+        assert!(content.ends_with("$\\times$"));
+        assert!(!append_part(&mut content, ""));
+        assert!(!append_part(&mut content, "下一节 $\\times$"));
+    }
 
     #[test]
     fn 仅直接创作要求触发文档交付() {

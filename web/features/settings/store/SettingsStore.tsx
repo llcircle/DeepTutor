@@ -1782,43 +1782,68 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       // Pages still on screen save themselves — they refresh their own local
       // state and surface their own errors. Everything else pending is
       // written straight to the endpoint that owns it.
+      const applied = new Map<string, unknown>();
+      const errors: string[] = [];
       for (const { key, payload, save } of applyingExtensions) {
-        if (save) await save();
-        else await applyExtensionPayload(key, payload);
-        if (key === "ui") applyUi(payload as UiSettings);
+        try {
+          if (save) await save();
+          else await applyExtensionPayload(key, payload);
+          if (key === "ui") applyUi(payload as UiSettings);
+          applied.set(key, payload);
+        } catch (error) {
+          errors.push(`${key}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
 
+      let appliedCatalog = false;
       if (catalogEditable) {
-        const response = await apiFetch(apiUrl("/api/settings/apply"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+        try {
+          const response = await apiFetch(apiUrl("/api/settings/apply"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ preserve_draft: true }),
+          });
+          const payload = await asJsonOrThrow(response);
+          if (!payload.catalog)
+            throw new Error("应用响应缺少模型目录。");
+          setCatalog(cloneCatalog(payload.catalog));
+          setDraft(current => JSON.stringify(current) === JSON.stringify(draft) ? cloneCatalog(payload.catalog) : current);
+          appliedCatalog = true;
+          invalidateLLMOptionsCache();
+          try {
+            const statusResponse = await apiFetch(apiUrl("/api/system/status"));
+            if (statusResponse.ok)
+              setStatus((await statusResponse.json()) as SystemStatus);
+          } catch {
+            /* 设置已生效，诊断信息可独立重试。 */
+          }
+        } catch (error) {
+          errors.push(`catalog: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      clearPending(applied);
+      if (errors.length || pendingRef.current.size) {
+        const response = await apiFetch(apiUrl("/api/settings/draft"), {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            catalog: catalogEditable && !appliedCatalog ? draft : null,
+            extensions: Object.fromEntries(pendingRef.current.entries()),
+          }),
         });
         const payload = await asJsonOrThrow(response);
-        if (!payload.catalog)
-          throw new Error("Missing catalog in apply response");
-        setCatalog(cloneCatalog(payload.catalog));
-        setDraft(cloneCatalog(payload.catalog));
-        invalidateLLMOptionsCache();
-        try {
-          const statusResponse = await apiFetch(apiUrl("/api/system/status"));
-          if (statusResponse.ok)
-            setStatus((await statusResponse.json()) as SystemStatus);
-        } catch {
-          /* Applying succeeded; diagnostics can be retried independently. */
-        }
+        setStoredDraft(payload.draft ?? null);
       } else {
         const response = await apiFetch(apiUrl("/api/settings/draft"), {
           method: "DELETE",
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        await asJsonOrThrow(response);
+        setStoredDraft(null);
       }
-      clearPending(
-        new Map(applyingExtensions.map(({ key, payload }) => [key, payload])),
-      );
-      setStoredDraft(null);
       setSavedSignature(null);
       setDraftRevision((value) => value + 1);
-      setToast(t("Applied"));
+      setToast(errors.length
+        ? t("Could not apply: {{message}}", { message: `有效设置已应用；以下设置未应用，草稿已保留：${errors.join("；")}` })
+        : t("Applied"));
     } catch (err) {
       setToast(
         t("Could not apply: {{message}}", {

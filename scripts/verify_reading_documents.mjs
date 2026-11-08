@@ -87,9 +87,9 @@ const mock = createServer(async (request, response) => {
         : { role: "assistant", content: "# 低预算文档\n\n仅整理已经获取的材料，保留明确的覆盖说明。" };
     } else if (content.includes("工具创建")) {
       const title = content.includes("实时") ? "实时生成文档" : "工具生成文档";
-      message = results.length < 2
-        ? tool("write_note", { title, content: `# ${title}\n\n保留可编辑正文。` })
-        : { role: "assistant", content: "文档已创建，请打开生成的文档卡片。" };
+      message = body.tools?.length
+        ? tool("write_note", { title })
+        : { role: "assistant", content: `# ${title}\n\n保留可编辑正文。` };
     } else {
       message = { role: "assistant", content: content.includes("不要") ? "这是一段普通讲解。" : "# 保存失败验收\n\n这段正文应保留，保存错误应明确显示。" };
     }
@@ -241,7 +241,7 @@ try {
   assert.equal(documentCount(), notesBefore);
   await command({ type: "start_turn", client_submission_id: randomUUID(), content: "请工具创建一个总结文档", capability: "chat" });
   assert.equal(documentCount(), notesBefore + 1);
-  checks.push("普通讲解不自动创建；模型重复两次相同 write_note 只保存一篇，收尾不重复保存");
+  checks.push("普通讲解不自动创建；明确文档任务只提交标题，独立正文完整后保存一篇，收尾不重复保存");
   database.exec("CREATE TRIGGER reject_document BEFORE INSERT ON resources WHEN NEW.domain='document' BEGIN SELECT RAISE(ABORT,'验收注入：磁盘不可写'); END;");
   try {
     const failed = await command({ type: "start_turn", client_submission_id: randomUUID(), content: "请生成保存失败验收文档", capability: "chat" }, "document_delivery_failed");

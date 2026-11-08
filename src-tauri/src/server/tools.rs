@@ -108,6 +108,20 @@ pub fn definitions(
         if enabled(name) && names.insert(name.to_string()) {
             let mut definition = factory();
             definition["function"]["name"] = Value::String(name.to_string());
+            if name == "write_note"
+                && request.is_some_and(|request| {
+                    super::document_delivery::requested(request, _capability)
+                })
+            {
+                // 长文正文走独立流，避免整篇 Markdown 的 JSON 参数被截断。
+                definition["function"]["description"] = json!("来源核实完成后，提交文档标题以进入正文写作。这里只传标题，不要把正文放进工具参数；客户端随后接收纯 Markdown 正文，完整后保存为可编辑文档。");
+                definition["function"]["parameters"] = json!({
+                    "type": "object",
+                    "properties": {"title": {"type": "string", "description": "待创建文档的标题"}},
+                    "required": ["title"],
+                    "additionalProperties": false
+                });
+            }
             tools.push(definition);
         }
     }
@@ -3910,6 +3924,9 @@ fn workspace_present(arguments: &Value, runtime: &ToolRuntime<'_>) -> ToolOutcom
 }
 
 fn write_note(arguments: &Value, runtime: &ToolRuntime<'_>) -> ToolOutcome {
+    if runtime.cancel.is_some_and(CancellationToken::is_cancelled) {
+        return ToolOutcome::failure("回合已取消，未保存文档。");
+    }
     let title = string_arg(arguments, "title");
     let content = string_arg(arguments, "content");
     if title.is_empty() || content.is_empty() {

@@ -1051,6 +1051,11 @@ async fn run_turn(context: &mut TurnContext) {
     let mut usage = LlmUsage::default();
     let mut calls = 0u64;
     let mut final_content = String::new();
+    let document_requested =
+        super::document_delivery::requested(&context.request, &context.capability);
+    let mut document_writer_needed = false;
+    let mut document_title = None::<String>;
+    let mut invalid_tool_attempts = 0;
     let mut status = "completed";
     let mut failure = None::<(String, String, bool)>;
     let initial_stage = context.emitter.stage.clone();
@@ -1264,8 +1269,22 @@ async fn run_turn(context: &mut TurnContext) {
             usage.accumulate(&response.usage);
             calls += 1;
             final_content = response.content.trim().to_string();
+            let output_truncated = response.output_truncated();
 
             if response.tool_calls.is_empty() {
+                if output_truncated {
+                    if document_requested {
+                        final_content = response.content.clone();
+                        document_writer_needed = true;
+                    } else {
+                        failure = Some((
+                            "model_output_limit".to_string(),
+                            "模型输出达到单次上限，回答尚未完成；请提高回答预算或缩小问题范围。"
+                                .to_string(),
+                            true,
+                        ));
+                    }
+                }
                 break;
             }
             if final_round {
@@ -1301,7 +1320,10 @@ async fn run_turn(context: &mut TurnContext) {
                 if context.cancel.is_cancelled() {
                     break;
                 }
-                if tool_call.name == "ask_user" {
+                if tool_call.name == "ask_user"
+                    && tool_call.arguments_error.is_none()
+                    && !output_truncated
+                {
                     let reply = match pause_for_user(context, &tool_call).await {
                         Ok(reply) => reply,
                         Err(error) => {
@@ -1323,21 +1345,51 @@ async fn run_turn(context: &mut TurnContext) {
                     }));
                     continue;
                 }
-                let outcome = tools::execute_with_runtime(
-                    &tool_call.name,
-                    &tool_call.arguments,
-                    tools::ToolRuntime {
-                        state: &context.state,
-                        request: Some(&context.request),
-                        llm: Some(&context.llm),
-                        cancel: Some(&context.cancel),
-                        turn_id: &context.turn_id,
-                        session_id: &context.session_id,
-                        language: &context.language,
-                        source_index: Some(&context.source_index),
-                    },
-                )
-                .await;
+                let outcome = if document_requested && tool_call.name == "write_note" {
+                    document_writer_needed = true;
+                    document_title = tool_call
+                        .arguments
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .filter(|title| !title.trim().is_empty())
+                        .map(|title| title.chars().take(160).collect());
+                    tools::ToolOutcome::success(
+                        if tool_call.arguments_error.is_some() || output_truncated {
+                            "正文工具参数不完整，未写入残缺文档。已转入独立 Markdown 写作，请勿重复提交长 JSON。"
+                        } else {
+                            "已接收文档标题；正文将由独立 Markdown 写作阶段生成，完整后才保存。此时尚未创建文档。"
+                        },
+                        json!({"document_pending": true}),
+                    )
+                } else if tool_call.arguments_error.is_some() || output_truncated {
+                    invalid_tool_attempts += 1;
+                    let error = if output_truncated {
+                        "模型输出达到单次上限，工具参数可能被截断，未执行工具。请缩短参数。"
+                            .to_string()
+                    } else {
+                        tool_call.arguments_error.clone().unwrap_or_default()
+                    };
+                    if invalid_tool_attempts >= 2 {
+                        failure = Some(("invalid_tool_arguments".to_string(), error.clone(), true));
+                    }
+                    tools::ToolOutcome::failure(error)
+                } else {
+                    tools::execute_with_runtime(
+                        &tool_call.name,
+                        &tool_call.arguments,
+                        tools::ToolRuntime {
+                            state: &context.state,
+                            request: Some(&context.request),
+                            llm: Some(&context.llm),
+                            cancel: Some(&context.cancel),
+                            turn_id: &context.turn_id,
+                            session_id: &context.session_id,
+                            language: &context.language,
+                            source_index: Some(&context.source_index),
+                        },
+                    )
+                    .await
+                };
                 if let Err(error) = emit_tool_events(context, &tool_call, &outcome) {
                     status = "failed";
                     failure = Some(("event_persist_failed".to_string(), error, false));
@@ -1378,9 +1430,27 @@ async fn run_turn(context: &mut TurnContext) {
                     break;
                 }
             }
-            if failure.is_some() || terminal_tool {
+            if failure.is_some() || terminal_tool || document_writer_needed {
+                if document_writer_needed {
+                    // 工具前的说明和旧 JSON 正文不是成品，独立写作从原始要求与已读材料重新开始。
+                    final_content.clear();
+                }
                 break;
             }
+        }
+    }
+
+    if failure.is_none() && document_writer_needed && !context.cancel.is_cancelled() {
+        if let Err(error) = write_document_body(
+            context,
+            document_title.as_deref(),
+            &mut final_content,
+            &mut usage,
+            &mut calls,
+        )
+        .await
+        {
+            failure = Some(("document_generation_incomplete".to_string(), error, true));
         }
     }
 
@@ -1716,6 +1786,114 @@ async fn pause_for_user(context: &mut TurnContext, call: &llm::ToolCall) -> Resu
     }
 }
 
+async fn write_document_body(
+    context: &mut TurnContext,
+    title: Option<&str>,
+    content: &mut String,
+    usage: &mut LlmUsage,
+    calls: &mut u64,
+) -> Result<(), String> {
+    const MAX_PARTS: usize = 8;
+    const MAX_CHARS: usize = 200_000;
+    let mut messages = context.provider_messages.clone();
+    // 损坏的工具参数只保留诊断，不把残缺的整篇正文再次回灌给写作模型。
+    for message in &mut messages {
+        if let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) {
+            for call in calls {
+                if call.pointer("/function/name").and_then(Value::as_str) == Some("write_note") {
+                    call["function"]["arguments"] = json!(serde_json::to_string(
+                        &json!({"title": title.unwrap_or("文档")})
+                    )
+                    .unwrap_or_default());
+                }
+            }
+        }
+    }
+    messages.push(json!({
+        "role": "system",
+        "content": format!("现在生成用户要求的完整文档，标题参考：{}。只输出纯 Markdown 正文，不要输出 JSON、工具调用、测试文字或保存成功的宣称。严格覆盖用户完整提纲，保留已核实来源与页码，资料缺失处明确说明。无需压缩成摘要。正文会由客户端保存，不需要调用工具。若单次输出达到上限，客户端会请求从断点续写。", title.unwrap_or("依照用户要求确定标题"))
+    }));
+    for part in 0..MAX_PARTS {
+        if context.cancel.is_cancelled() {
+            return Err("文档生成已取消，未保存未完成的文档。".to_string());
+        }
+        let mut current = messages.clone();
+        if !content.is_empty() {
+            current.push(json!({"role": "assistant", "content": content}));
+            current.push(json!({"role": "system", "content": "上一段因输出上限中断。请从最后一个字符后直接继续，只输出剩余 Markdown。不要重复标题、前文、引言或续写说明；先补全未完的句子、公式或代码块，再完成尚未覆盖的提纲。"}));
+        }
+        let call_id = new_id("document");
+        let emitter = context.emitter.with_stage("responding");
+        let event_log = &mut context.events;
+        let emit_error = Mutex::new(None::<String>);
+        let response = llm::stream_completion(
+            &context.state.client,
+            &context.llm,
+            &current,
+            &[],
+            None,
+            &context.cancel,
+            |chunk| {
+                if emit_error.lock().is_some() {
+                    return;
+                }
+                let (kind, text) = match chunk {
+                    LlmChunk::Content(text) => ("content", text),
+                    LlmChunk::Thinking(text) => ("thinking", text),
+                    _ => return,
+                };
+                if text.is_empty() {
+                    return;
+                }
+                match emitter.emit(kind, text, json!({
+                    "call_id": call_id, "phase": "responding", "label": "文档写作",
+                    "call_kind": "document_writing", "trace_id": call_id,
+                    "trace_role": "response", "trace_group": "llm",
+                    "trace_kind": if kind == "thinking" { "llm_reasoning" } else { "llm_chunk" },
+                    "part": part + 1
+                })) {
+                    Ok(event) => event_log.push(event),
+                    Err(error) => *emit_error.lock() = Some(error),
+                }
+            },
+        )
+        .await;
+        if let Some(error) = emit_error.lock().take() {
+            return Err(error);
+        }
+        let response = response?;
+        usage.accumulate(&response.usage);
+        *calls += 1;
+        if !response.tool_calls.is_empty() {
+            return Err("文档写作阶段仍收到工具调用，未保存未完成的文档。".to_string());
+        }
+        if !super::document_delivery::append_part(content, &response.content) {
+            return Err(
+                "文档续写未产生新正文，已停止重复请求；未完成的正文保留在聊天中。".to_string(),
+            );
+        }
+        if content.chars().count() > MAX_CHARS {
+            return Err("文档超过 200000 字符，未保存；请拆分成多个文档。".to_string());
+        }
+        if matches!(
+            response.finish_reason.as_deref(),
+            Some("content_filter" | "refusal" | "incomplete")
+        ) {
+            return Err("模型未正常完成文档，未保存未完成的正文。".to_string());
+        }
+        if !response.output_truncated() {
+            return Ok(());
+        }
+        let event = emitter.emit(
+            "progress",
+            "文档达到单次输出上限，正在从断点续写。",
+            json!({"trace_kind": "document_continuation", "part": part + 1}),
+        )?;
+        context.events.push(event);
+    }
+    Err("文档连续 8 段仍未完成，已停止自动续写，未保存残缺文档；请拆分提纲后重试。".to_string())
+}
+
 async fn deliver_requested_document(
     context: &mut TurnContext,
     content: &str,
@@ -1727,18 +1905,25 @@ async fn deliver_requested_document(
             event["type"] == "tool_result" && event["metadata"]["tool_name"] == "write_note"
         })
         .collect::<Vec<_>>();
-    if note_results
-        .iter()
-        .any(|event| event["metadata"]["call_state"] == "complete")
-    {
+    if note_results.iter().any(|event| {
+        event["metadata"]["call_state"] == "complete"
+            && event
+                .pointer("/metadata/tool_metadata/page/id")
+                .and_then(Value::as_str)
+                .is_some()
+    }) {
         return Ok(());
     }
-    if !note_results.is_empty() {
+    if note_results.iter().any(|event| {
+        event["metadata"]["call_state"] == "error"
+            && event["metadata"]["tool_metadata"]["kind"] != "argument_error"
+    }) {
         return Err("文档保存失败，请查看工具错误后重试；聊天正文仍然保留。".to_string());
     }
     let call = llm::ToolCall {
         id: format!("document-delivery-{}", context.turn_id),
         name: "write_note".to_string(),
+        arguments_error: None,
         arguments: json!({
             "title": super::document_delivery::title(content),
             "content": content
@@ -2439,6 +2624,9 @@ pub(super) async fn build_provider_messages(
     }
     if let Some(custom_prompt) = non_empty(request, "system_prompt") {
         system = format!("{custom_prompt}\n\n{system}");
+    }
+    if super::document_delivery::requested(request, &capability) {
+        system.push_str("\n\n本轮用户明确要求创建文档。先核实资料，准备完成后调用 write_note，只传 title，不要把正文塞入 JSON，不要创建测试或占位文档。客户端将启动独立纯 Markdown 写作，并在正文完整后保存。正文必须覆盖用户完整提纲；未核实的内容明确说明，不得假装已覆盖。");
     }
     let extra_context = build_turn_context(
         state,
@@ -3720,6 +3908,152 @@ mod tests {
         assert!(!events
             .iter()
             .any(|e| e["type"] == "workspace_items" || e["type"] == "result"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn 长文参数损坏或测试占位均转入独立写作并续写后只保存一次() {
+        for broken in [true, false] {
+            let (state, _temporary) = test_state();
+            let requests = std::sync::Arc::new(Mutex::new(Vec::<Value>::new()));
+            let captured = requests.clone();
+            let app = Router::new().fallback(post(move |axum::Json(body): axum::Json<Value>| {
+                let captured = captured.clone();
+                async move {
+                    let mut requests = captured.lock();
+                    requests.push(body.clone());
+                    let n = requests.len();
+                    let (delta, reason) = if body.get("tools").is_some() {
+                        (json!({"tool_calls":[{"index":0,"id":"note","function":{
+                            "name":"write_note", "arguments": if broken { "{\"title\":\"资料\",\"content\":\"被截断的正文" } else { "{\"title\":\"测试\",\"content\":\"测试内容\"}" }
+                        }}]}), if broken { "length" } else { "tool_calls" })
+                    } else if n == 2 {
+                        (json!({"content":"# 完整复习资料\n\n## 一、绪论\n保留公式 $\\sigma"}), "length")
+                    } else {
+                        (json!({"content":"$ 和来源。\n\n## 六、数据处理\n完整末尾。"}), "stop")
+                    };
+                    ([(header::CONTENT_TYPE,"text/event-stream")],
+                     format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":delta,"finish_reason":reason}]})))
+                }
+            }));
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            configure_mock_model(&state, format!("http://{address}/v1"));
+            let request = json!({"content":"请写一份完整复习文档", "capability":"chat", "client_submission_id":"long-document"});
+            let receipt = start_turn(state.clone(), request.clone()).await.unwrap();
+            let turn_id = receipt["turn_id"].as_str().unwrap();
+            assert_eq!(
+                wait_for_finished_turn(&state, turn_id).await["status"],
+                "completed"
+            );
+            let documents = state.database.list_resources("document").unwrap();
+            assert_eq!(documents.len(), 1);
+            assert_eq!(documents[0]["title"], "完整复习资料");
+            let text = documents[0]["content"].as_str().unwrap();
+            assert!(text.contains("$\\sigma$"));
+            assert!(text.ends_with("完整末尾。"));
+            assert!(!text.contains("测试内容"));
+            assert_eq!(requests.lock().len(), 3);
+            assert!(requests.lock()[1].get("tools").is_none());
+            let events = state.database.get_turn_events(turn_id, 0).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e["type"] == "workspace_items")
+                    .count(),
+                1
+            );
+            assert!(!events.iter().any(|e| e["type"] == "error"));
+            let replay = start_turn(state.clone(), request).await.unwrap();
+            assert_eq!(replay["turn_id"], receipt["turn_id"]);
+            assert_eq!(state.database.list_resources("document").unwrap().len(), 1);
+            task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn 连续截断达到续写上限不保存残缺文档() {
+        let (state, _temporary) = test_state();
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let captured = counter.clone();
+        let app = Router::new().fallback(post(move |axum::Json(body): axum::Json<Value>| {
+            let n = captured.fetch_add(1,std::sync::atomic::Ordering::SeqCst);
+            async move {
+                let delta = if body.get("tools").is_some() {
+                    json!({"tool_calls":[{"index":0,"id":"note","function":{"name":"write_note","arguments":"{\"title\":\"资料\"}"}}]})
+                } else { json!({"content":format!("第 {n} 段未完正文\n")}) };
+                ([(header::CONTENT_TYPE,"text/event-stream")], format!("data: {}\n\ndata: [DONE]\n\n",json!({"choices":[{"delta":delta,"finish_reason":"length"}]})))
+            }
+        }));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        configure_mock_model(&state, format!("http://{address}/v1"));
+        let receipt = start_turn(state.clone(), json!({"content":"请生成一个总结文档"}))
+            .await
+            .unwrap();
+        let turn_id = receipt["turn_id"].as_str().unwrap();
+        let turn = wait_for_finished_turn(&state, turn_id).await;
+        assert_eq!(turn["status"], "failed");
+        assert_eq!(turn["error_code"], "document_generation_incomplete");
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 9);
+        assert!(state
+            .database
+            .list_resources("document")
+            .unwrap()
+            .is_empty());
+        assert!(!state
+            .database
+            .get_turn_events(turn_id, 0)
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "workspace_items"));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn 取消独立文档写作不保存不产生文档卡片() {
+        let (state, _temporary) = test_state();
+        let writing = std::sync::Arc::new(tokio::sync::Notify::new());
+        let ready = writing.clone();
+        let app = Router::new().fallback(post(move |axum::Json(body): axum::Json<Value>| {
+            let ready = ready.clone();
+            async move {
+                if body.get("tools").is_none() {
+                    ready.notify_one();
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+                ([(header::CONTENT_TYPE,"text/event-stream")], format!("data: {}\n\ndata: [DONE]\n\n",json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"note","function":{"name":"write_note","arguments":"{\"title\":\"资料\"}"}}]}}]})))
+            }
+        }));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        configure_mock_model(&state, format!("http://{address}/v1"));
+        let receipt = start_turn(state.clone(), json!({"content":"请写一个总结文档"}))
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), writing.notified())
+            .await
+            .unwrap();
+        let turn_id = receipt["turn_id"].as_str().unwrap();
+        state.cancel_turn(turn_id);
+        assert_eq!(
+            wait_for_finished_turn(&state, turn_id).await["status"],
+            "cancelled"
+        );
+        assert!(state
+            .database
+            .list_resources("document")
+            .unwrap()
+            .is_empty());
+        assert!(!state
+            .database
+            .get_turn_events(turn_id, 0)
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "workspace_items"));
         task.abort();
     }
 

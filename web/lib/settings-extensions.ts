@@ -1,4 +1,5 @@
 import { apiFetch, apiUrl } from "@/lib/api";
+import { asJsonOrThrow } from "@/shared/api/client";
 
 /**
  * Settings pages that keep state outside the model catalog.
@@ -82,8 +83,8 @@ export async function applyExtensionPayload(
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(`${key}: ${typeof error.detail === "string" ? error.detail : `HTTP ${response.status}`}`);
+    try { await asJsonOrThrow(response); }
+    catch (error) { throw new Error(`${key}: ${error instanceof Error ? error.message : String(error)}`); }
   }
   if (key === "tools") {
     const { invalidateEnabledOptionalToolsCache } = await import("@/lib/tools-settings");

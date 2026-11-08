@@ -272,3 +272,16 @@
 - 用户数据：安装目录 data/cache/temp/logs/home 共 5879 文件、797528981 字节，与操作前清单逐个 SHA256 比对完全一致。新文档保存在安装目录 data/deeptutor.sqlite3，可下载 Markdown 或从编辑器导出 Word。src-tauri/target 已删除。
 - 可用性：本地测试及最终 EXE 验收通过；真实模型的内容质量未使用收费服务测试。旧回答不会自动补全，需要重发原提纲。仅本地提交，不推送。
 - 总报告：artifacts/document-final-verification.json；文档流程及截图：artifacts/reading-documents-verification；流式报告：artifacts/stream-runtime-verification；便携校验：artifacts/document-final-portable-verification.log。
+
+
+## 2026-11-08 20:06:10（Asia/Shanghai）— 长文档反复失败与设置保存修复
+
+- 已回读真实失败聊天：整篇 Markdown 工具参数被截断，旧解析回退为 _raw 并误报缺少 title/content，导致模型反复重写；截图中的测试文档并非完整交付。
+- 明确文档任务先读资料，write_note 只提交标题，独立 Markdown 写作识别输出上限并有界续写。取消、过滤、无进展、续写超限均不保存残缺成品，实际保存后才发布文档卡片；保留公式与反斜杠。
+- 修复 max_rounds=330 越界草稿阻断全部设置应用：提供字段路径、实际值与 1–50 范围提示，各分区及模型独立应用，失败草稿保留；不擅自更改用户草稿。
+- 自动回归通过：Rust 213、Node 1326、Vitest 1017；类型、契约、架构、国际化和路由检查通过。ESLint 无错误，既有警告未扩大处理。
+- 使用用户已配置真实模型及原完整提纲、四份原课件进行隔离 EXE 验收：26 次模型调用，正文 33516 字符，两次断点续写，完整覆盖四章与关键主题且只保存一篇；编辑自动保存、Word 导出、重启保持、原用户数据库哈希不变。
+- 原 330 草稿部分应用、改为 34 后清除草稿及重启持久化均通过；37 个设置页无前端异常或 HTTP 错误。阅读跨资料、低预算、存储失败、首次及连续生成、重放去重验收通过。
+- 统一构建更新 EXE、便携 ZIP 和 SHA-256；原 data/cache/temp/logs/home 保留，ZIP 无用户数据及 Python/Node 运行时。EXE 启动、25 模块、安装目录存储、892 文件逐项哈希验收通过，target 已自动清理。
+- EXE SHA-256：03fa237fc81d5f865e5065a00308f71c72fe9cbef68a9ac63eb7d134c5d0794c；ZIP SHA-256：65a8c72ed8a8c9c5a9d6560e7da1ae15ca0206e84c70e1ecab80b7ef8e76bbc1。代码状态：可用，已完成真实模型和最终发行 EXE 验收；本地提交，不推送。
+- 验收汇总：artifacts/live-ai-followup-delivery-report.json；真实模型文档与截图：artifacts/live-ai-documents-verification/。

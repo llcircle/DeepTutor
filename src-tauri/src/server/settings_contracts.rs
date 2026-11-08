@@ -42,6 +42,7 @@ fn bounds(name: &str) -> (f64, f64) {
 
 // 旧库中的缺失字段、null 和错误类型回退到默认值；新写入则严格校验。
 fn overlay(base: &mut Value, patch: &Value, strict: bool, name: &str) -> ApiResult<()> {
+    let field = name.rsplit('.').next().unwrap_or(name);
     if let Some(object) = base.as_object_mut() {
         let Some(patch) = patch.as_object() else {
             return if strict {
@@ -52,21 +53,23 @@ fn overlay(base: &mut Value, patch: &Value, strict: bool, name: &str) -> ApiResu
         };
         for (key, value) in patch {
             if let Some(target) = object.get_mut(key) {
-                overlay(target, value, strict, key)?;
+                overlay(target, value, strict, &format!("{name}.{key}"))?;
             } else if strict {
-                return Err(ApiError::bad_request(format!("未知设置字段：{key}。")));
+                return Err(ApiError::bad_request(format!(
+                    "未知设置字段：{name}.{key}。"
+                )));
             }
         }
         return Ok(());
     }
     let valid = if base.is_number() {
-        let (lo, hi) = bounds(name);
+        let (lo, hi) = bounds(field);
         patch.as_f64().is_some_and(|v| {
-            v.is_finite() && v >= lo && v <= hi && (name == "temperature" || v.fract() == 0.0)
+            v.is_finite() && v >= lo && v <= hi && (field == "temperature" || v.fract() == 0.0)
         })
     } else if base.is_boolean() {
         patch.is_boolean()
-    } else if name == "note_agent_mode" {
+    } else if field == "note_agent_mode" {
         patch
             .as_str()
             .is_some_and(|v| ["auto", "on", "off", "always", "never"].contains(&v))
@@ -74,15 +77,26 @@ fn overlay(base: &mut Value, patch: &Value, strict: bool, name: &str) -> ApiResu
         patch.is_string()
     };
     if valid {
-        *base = if base.is_number() && name != "temperature" {
+        *base = if base.is_number() && field != "temperature" {
             json!(patch.as_f64().unwrap_or_default() as u64)
         } else {
             patch.clone()
         };
     } else if strict {
-        return Err(ApiError::bad_request(format!(
-            "设置 {name} 的类型或取值范围无效。"
-        )));
+        let detail = if base.is_number() {
+            let (lo, hi) = bounds(field);
+            format!(
+                "必须为 {lo}–{hi} 之间的{}，当前值为 {patch}",
+                if field == "temperature" {
+                    "数值"
+                } else {
+                    "整数"
+                }
+            )
+        } else {
+            "类型或取值无效".to_string()
+        };
+        return Err(ApiError::bad_request(format!("设置 {name} {detail}。")));
     }
     Ok(())
 }
@@ -299,5 +313,20 @@ mod tests {
         ] {
             assert!(overlay(&mut defaults("chat_starters"), &value, true, "").is_err());
         }
+    }
+
+    #[test]
+    fn 越界错误包含完整字段路径实际值和范围() {
+        let error = overlay(
+            &mut defaults("capability_settings"),
+            &json!({"chat":{"max_rounds":330}}),
+            true,
+            "capability_settings",
+        )
+        .unwrap_err();
+        let error = format!("{error:?}");
+        assert!(error.contains("capability_settings.chat.max_rounds"));
+        assert!(error.contains("330"));
+        assert!(error.contains("1–50"));
     }
 }
