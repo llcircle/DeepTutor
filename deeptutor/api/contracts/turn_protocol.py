@@ -52,6 +52,7 @@ class StreamEventType(str, Enum):
     CONTENT = "content"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    WORKSPACE_ITEMS = "workspace_items"
     PROGRESS = "progress"
     SOURCES = "sources"
     RESULT = "result"

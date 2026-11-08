@@ -5,6 +5,8 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 
 import type { MessageAttachment } from "@/features/chat/ChatStateAdapter";
 import { docIconFor } from "@/lib/doc-attachments";
+import { mergeGeneratedFiles } from "@/lib/generated-files";
+export { extractStreamedArtifacts, mergeGeneratedFiles } from "@/lib/generated-files";
 import type { StreamEvent } from "@/features/chat/model/protocol";
 
 /**
@@ -38,93 +40,6 @@ export function parseAttachmentHref(href?: string): string | null {
   if (!href || !href.startsWith(ATTACHMENT_HREF_PREFIX)) return null;
   const name = decode(href.slice(ATTACHMENT_HREF_PREFIX.length));
   return name || null;
-}
-
-// ---------------------------------------------------------------------------
-// Generated-file collection (shared by the provider and the message's card
-// block). Persisted ``generated`` attachments merged with artifacts streamed
-// live in ``tool_result`` events, deduped by URL.
-// ---------------------------------------------------------------------------
-
-export function extractStreamedArtifacts(
-  events?: StreamEvent[],
-): MessageAttachment[] {
-  const out: MessageAttachment[] = [];
-  for (const ev of events ?? []) {
-    if (ev.type !== "tool_result") continue;
-    const meta = (ev.metadata ?? {}) as {
-      tool_metadata?: {
-        workspace_items?: Array<{
-          workspace_id?: string;
-          workspace_item_id?: string;
-          relative_path?: string;
-          filename?: string;
-          url?: string;
-          mime_type?: string;
-          size_bytes?: number;
-          sha256?: string;
-          title?: string;
-          caption?: string;
-          generated?: boolean;
-        }>;
-        artifacts?: Array<{
-          filename?: string;
-          url?: string;
-          mime_type?: string;
-          size_bytes?: number;
-        }>;
-      };
-    };
-    const workspaceItems = meta.tool_metadata?.workspace_items ?? [];
-    for (const item of workspaceItems) {
-      if (!item?.url || !item.workspace_item_id) continue;
-      out.push({
-        type: item.mime_type?.startsWith("image/") ? "image" : "document",
-        filename: item.filename,
-        url: item.url,
-        mime_type: item.mime_type,
-        size_bytes: item.size_bytes,
-        generated: item.generated ?? true,
-        origin: "workspace",
-        workspace_id: item.workspace_id,
-        workspace_item_id: item.workspace_item_id,
-        relative_path: item.relative_path,
-        sha256: item.sha256,
-        title: item.title,
-        caption: item.caption,
-      });
-    }
-    if (workspaceItems.length) continue;
-    for (const a of meta.tool_metadata?.artifacts ?? []) {
-      if (!a?.url) continue;
-      out.push({
-        type: a.mime_type?.startsWith("image/") ? "image" : "document",
-        filename: a.filename,
-        url: a.url,
-        mime_type: a.mime_type,
-        size_bytes: a.size_bytes,
-        generated: true,
-      });
-    }
-  }
-  return out;
-}
-
-export function mergeGeneratedFiles(
-  attachments: MessageAttachment[],
-  events?: StreamEvent[],
-): MessageAttachment[] {
-  const persisted = attachments.filter(
-    (a) => a.generated || a.origin === "workspace",
-  );
-  const seen = new Set(persisted.map((a) => a.url).filter(Boolean));
-  const merged = [...persisted];
-  for (const a of extractStreamedArtifacts(events)) {
-    if (a.url && seen.has(a.url)) continue;
-    if (a.url) seen.add(a.url);
-    merged.push(a);
-  }
-  return merged;
 }
 
 // ---------------------------------------------------------------------------

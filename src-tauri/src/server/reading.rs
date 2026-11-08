@@ -4054,7 +4054,7 @@ fn read_material_tool(
         content.push_str("\n图片文字或图形不清楚时，调用 view_figure 并传入清单中的文件名。");
     }
     content.push_str(&format!(
-        "\n\n引用原文后调用 reader_goto，并在回答中标注 [p.N]。"
+        "\n\n在回答中标注 [p.N]。用户要求跳转或逐段讲解时调用 reader_goto；跨章节文档保留页码引用即可，避免为每条引用反复跳页。"
     ));
     let mut metadata = material_metadata(
         &material,

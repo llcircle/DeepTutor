@@ -66,6 +66,28 @@ it("does not mount the viewer while closed and idle", () => {
   expect(fixture.mounts).toBe(0);
 });
 
+it("首次生成文档会加载从未打开过的侧栏", () => {
+  const props = {
+    open: false,
+    sessionId: "session-a",
+    activity: { artifacts: [] } as unknown as SessionViewerPanelProps["activity"],
+    onClose: () => {},
+    onAutoOpen: () => {},
+  };
+  const view = render(<LazySessionViewerPanel {...props} />);
+  expect(fixture.mounts).toBe(0);
+  view.rerender(<LazySessionViewerPanel {...props} activity={{
+    ...props.activity,
+    artifacts: [{
+      messageIndex: 1,
+      attachment: {
+        type: "document", generated: true,
+        url: "/api/documents/0123456789abcdef0123456789abcdef/markdown",
+      },
+    }],
+  }} />);
+  expect(fixture.mounts).toBe(1);
+});
 it("replays viewer actions in order when the chunk loads", () => {
   const ref = createRef<SessionViewerPanelHandle>();
   const props = {

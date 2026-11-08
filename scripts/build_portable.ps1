@@ -7,6 +7,8 @@ param(
     [switch]$SkipFrontend,
     [switch]$SkipZip,
     [switch]$KeepBuildArtifacts,
+    [ValidatePattern('^$|^[A-Fa-f0-9]{64}$')]
+    [string]$ReuseBinarySha256 = "",
     [string]$WebView2RuntimeDir = ""
 )
 
@@ -73,21 +75,54 @@ if (-not (Test-Path -LiteralPath (Join-Path $webOutput "index.html"))) {
     throw "缺少桌面前端资源。请先运行 npm run build:desktop。"
 }
 
-Invoke-Checked -Command "cargo" -Arguments @(
-    "build",
-    "--manifest-path",
-    (Join-Path $tauriRoot "Cargo.toml"),
-    "--locked",
-    "--$Configuration"
-) -WorkingDirectory $projectRoot
-
 $targetRoot = Join-Path $tauriRoot "target"
 $profileDirectory = if ($Configuration -eq "release") { "release" } else { "debug" }
-$executable = if ($isWindowsHost) {
-    Join-Path $targetRoot "$profileDirectory\deeptutor-desktop.exe"
+$portableExecutable = if ($isWindowsHost) {
+    Join-Path $stageRoot "DeepTutor.exe"
 }
 else {
-    Join-Path $targetRoot "$profileDirectory/deeptutor-desktop"
+    Join-Path $stageRoot "DeepTutor"
+}
+if ($ReuseBinarySha256) {
+    if ($Configuration -ne "release" -or $SkipZip) {
+        throw "复用已验证二进制仅支持 release，并且必须同时更新便携 ZIP。"
+    }
+    if (-not (Test-Path -LiteralPath $portableExecutable -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $portableExecutable -Algorithm SHA256).Hash -ne $ReuseBinarySha256) {
+        throw "现有发行 EXE 与指定 SHA-256 不一致，拒绝复用。"
+    }
+    # 前端通过本地服务读取外部资源。Rust 或编译嵌入资源变更后必须重新编译。
+    $binaryTime = (Get-Item -LiteralPath $portableExecutable).LastWriteTimeUtc
+    $inputs = @(Get-ChildItem -LiteralPath $tauriRoot -Recurse -File | Where-Object {
+        -not $_.FullName.StartsWith($targetRoot + [System.IO.Path]::DirectorySeparatorChar) -and
+        -not $_.FullName.StartsWith($webOutput + [System.IO.Path]::DirectorySeparatorChar)
+    })
+    $inputs += @(Get-ChildItem -LiteralPath (Join-Path $projectRoot "deeptutor") -Recurse -File |
+        Where-Object { $_.Extension -in @(".yaml", ".json", ".md") })
+    $cargoConfig = Join-Path $projectRoot ".cargo"
+    if (Test-Path -LiteralPath $cargoConfig) {
+        $inputs += @(Get-ChildItem -LiteralPath $cargoConfig -Recurse -File)
+    }
+    if (@($inputs | Where-Object { $_.LastWriteTimeUtc -gt $binaryTime }).Count) {
+        throw "Rust 构建输入晚于现有 EXE，必须运行完整构建，不能复用二进制。"
+    }
+    $executable = $portableExecutable
+    Write-Host "已核对发行 EXE 的 SHA-256，复用二进制并更新前端及便携包。"
+}
+else {
+    Invoke-Checked -Command "cargo" -Arguments @(
+        "build",
+        "--manifest-path",
+        (Join-Path $tauriRoot "Cargo.toml"),
+        "--locked",
+        "--$Configuration"
+    ) -WorkingDirectory $projectRoot
+    $executable = if ($isWindowsHost) {
+        Join-Path $targetRoot "$profileDirectory\deeptutor-desktop.exe"
+    }
+    else {
+        Join-Path $targetRoot "$profileDirectory/deeptutor-desktop"
+    }
 }
 if (-not (Test-Path -LiteralPath $executable)) {
     throw "未找到 Rust 可执行文件：$executable"
@@ -96,21 +131,23 @@ if (-not (Test-Path -LiteralPath $executable)) {
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
 
-$portableExecutable = if ($isWindowsHost) {
-    Join-Path $stageRoot "DeepTutor.exe"
+if (-not $ReuseBinarySha256) {
+    Copy-Item -LiteralPath $executable -Destination $portableExecutable
 }
-else {
-    Join-Path $stageRoot "DeepTutor"
-}
-Copy-Item -LiteralPath $executable -Destination $portableExecutable
 
 $nativeDependencies = @()
 if ($isWindowsHost) {
-    $webview2Loader = Join-Path $targetRoot "$profileDirectory\WebView2Loader.dll"
+    $webview2Loader = if ($ReuseBinarySha256) {
+        Join-Path $stageRoot "WebView2Loader.dll"
+    } else {
+        Join-Path $targetRoot "$profileDirectory\WebView2Loader.dll"
+    }
     if (-not (Test-Path -LiteralPath $webview2Loader -PathType Leaf)) {
         throw "构建输出缺少 DeepTutor.exe 必需的 WebView2Loader.dll：$webview2Loader"
     }
-    Copy-Item -LiteralPath $webview2Loader -Destination $stageRoot
+    if (-not $ReuseBinarySha256) {
+        Copy-Item -LiteralPath $webview2Loader -Destination $stageRoot
+    }
     $nativeDependencies += "WebView2Loader.dll"
 }
 

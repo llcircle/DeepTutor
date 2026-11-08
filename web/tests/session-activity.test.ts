@@ -95,6 +95,29 @@ test("keeps the originating message index on both lists", () => {
   assert.equal(activity.artifacts[0].messageIndex, 1);
 });
 
+test("实时文档进入会话产物，并与持久化附件及重放事件按 URL 去重", () => {
+  const document = {
+    type: "document",
+    filename: "复习资料.md",
+    url: "/api/documents/0123456789abcdef0123456789abcdef/markdown",
+    mime_type: "text/markdown",
+    generated: true,
+  };
+  const events = [
+    event("tool_result", { tool_metadata: { artifacts: [document] } }),
+    event("workspace_items", { items: [document] }),
+  ];
+  const live = buildSessionActivity(messages({ role: "assistant", events }));
+  assert.equal(live.artifacts.length, 1);
+  assert.equal(live.artifacts[0].attachment.url, document.url);
+  assert.equal(live.isEmpty, false);
+  const restored = buildSessionActivity(messages({
+    role: "assistant", events, attachments: [document],
+  }));
+  assert.equal(restored.artifacts.length, 1);
+  assert.equal(restored.attachments.length, 0);
+});
+
 test("collects generated files across every turn in order", () => {
   const second = { ...ARTIFACT, filename: "chart.png", type: "image" };
   const activity = buildSessionActivity(

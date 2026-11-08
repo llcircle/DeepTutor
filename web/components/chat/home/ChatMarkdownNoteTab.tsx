@@ -8,23 +8,34 @@ import { loadChatMarkdownNoteDraft, saveChatMarkdownNoteDraft } from '@/lib/chat
 const NoteWorkspace = dynamic(() => import('@/features/notes/components/NoteWorkspace'), {
   ssr: false,
 })
-export default function ChatMarkdownNoteTab({ sessionId }: { sessionId: string | null }) {
+export default function ChatMarkdownNoteTab({
+  sessionId,
+  documentId,
+}: {
+  sessionId: string | null
+  documentId?: string
+}) {
   const { t } = useTranslation()
   const auth = useAuthStatus()
   const owner =
     !auth.loading && auth.statusAvailable ? (auth.enabled ? auth.userId : 'local') : null
   const [recoverable, setRecoverable] = useState(false)
-  const [docId, setDocId] = useState<string | null>(null)
+  const [docId, setDocId] = useState<string | null>(documentId ?? null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   useEffect(() => {
+    if (documentId) {
+      setDocId(documentId)
+      setRecoverable(false)
+      return
+    }
     if (!owner) return
     const draft = loadChatMarkdownNoteDraft(owner, sessionId)
     setDocId(draft.saved?.id || null)
     setRecoverable(
       !!draft.saved && (draft.content !== draft.saved.content || draft.title !== draft.saved.title)
     )
-  }, [owner, sessionId])
+  }, [documentId, owner, sessionId])
   const create = async () => {
     if (!owner || busy) return
     setBusy(true)

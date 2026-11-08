@@ -95,6 +95,7 @@ import { listSessionThreads, type SessionSummary } from "@/lib/session-api";
 import { subscribeSessionChanges } from "@/lib/session-events";
 import { isPlaceholderSessionTitle } from "@/lib/session-title";
 import { SHORTCUTS } from "@/lib/shortcuts";
+import { generatedDocumentId } from "@/lib/generated-document";
 
 const PdfPreview = dynamic(
   () => import("@/components/chat/preview/previewers/PdfPreview"),
@@ -176,7 +177,7 @@ function readStoredViewerWidth(): number {
 type ViewerTab =
   | { kind: "file"; id: string; label: string; source: FilePreviewSource }
   | { kind: "web"; id: string; label: string; url: string }
-  | { kind: "markdown-note"; id: string; label: string }
+  | { kind: "markdown-note"; id: string; label: string; docId?: string }
   | {
       kind: "quiz-followup";
       id: string;
@@ -482,14 +483,20 @@ function SessionViewerPanelInner(
   const openFileTab = useCallback(
     (a: MessageAttachment) => {
       setTabs((prev) => {
-        const id = fileTabIdFor(a, prev.length);
+        const docId = generatedDocumentId(a);
+        const id = docId ? `document:${docId}` : fileTabIdFor(a, prev.length);
         const existingIdx = prev.findIndex((tab) => tab.id === id);
         if (existingIdx >= 0) {
           setActiveTabId(id);
           return prev;
         }
         const label = a.filename || "Attachment";
-        const next: ViewerTab = {
+        const next: ViewerTab = docId ? {
+          kind: "markdown-note",
+          id,
+          label: a.title || label,
+          docId,
+        } : {
           kind: "file",
           id,
           label,
@@ -502,6 +509,24 @@ function SessionViewerPanelInner(
     },
     [onAutoOpen],
   );
+
+  const seenDocuments = useRef(new Set<string>());
+  useEffect(() => {
+    const pending = activity.artifacts.filter(({ attachment }) => {
+      const id = generatedDocumentId(attachment);
+      return id && !seenDocuments.current.has(`${tabsKey}:${id}`);
+    });
+    if (!pending.length) return;
+    const frame = requestAnimationFrame(() => {
+      for (const { attachment } of pending) {
+        const key = `${tabsKey}:${generatedDocumentId(attachment)}`;
+        if (seenDocuments.current.has(key)) continue;
+        seenDocuments.current.add(key);
+        openFileTab(attachment);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activity.artifacts, tabsKey, openFileTab]);
 
   const openWebTab = useCallback(
     (url: string) => {
@@ -1067,6 +1092,7 @@ function SessionViewerPanelInner(
           <ChatMarkdownNoteTabBody
             key={`${activeTab.id}:${sessionId ?? "pending"}`}
             sessionId={sessionId}
+            documentId={activeTab.docId}
           />
         ) : activeTab?.kind === "quiz-followup" ? (
           <QuizFollowupTabBody

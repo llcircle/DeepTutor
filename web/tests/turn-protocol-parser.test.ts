@@ -17,6 +17,7 @@ const eventTypes = [
   "content",
   "tool_call",
   "tool_result",
+  "workspace_items",
   "progress",
   "sources",
   "result",

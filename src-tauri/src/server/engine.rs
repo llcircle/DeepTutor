@@ -16,8 +16,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[cfg(test)]
-const MAX_TOOL_ROUNDS: usize = 7;
 const MAX_PARALLEL_TOOLS: usize = 4;
 const MAX_CONTEXT_CHARS: usize = 180_000;
 
@@ -1145,19 +1143,25 @@ async fn run_turn(context: &mut TurnContext) {
         let block =
             super::settings_contracts::capability_block(&context.state, &context.capability)
                 .unwrap_or_else(|_| json!({}));
-        let max_calls = block
+        let max_tool_rounds = block
             .get("max_rounds")
             .and_then(Value::as_u64)
-            .unwrap_or(8)
+            .unwrap_or(32)
             .clamp(1, 50) as usize;
         // 工具轮次耗尽后仍留一次不带工具的请求，将已有材料整理成最终回答。
-        for round in 0..max_calls {
-            let final_round = round + 1 == max_calls;
+        for round in 0..=max_tool_rounds {
+            let final_round = round == max_tool_rounds;
             drain_queued_input(context);
             if final_round {
+                let delivery_hint =
+                    if super::document_delivery::requested(&context.request, &context.capability) {
+                        "本轮要求创建文档，请输出完整文档正文，客户端会保存正文并提供真实文档入口。"
+                    } else {
+                        ""
+                    };
                 context.provider_messages.push(json!({
                     "role": "system",
-                    "content": "本轮工具调用次数已达到上限。请停止调用工具，依据已经获得的材料和工具结果直接给出最终回答；信息不足时明确说明已知结论与缺失信息，不要编造。"
+                    "content": format!("本轮已用完配置的工具轮次，请依据已核实的材料给出最终正文，保留来源和覆盖范围；不足之处明确说明，不要编造。{delivery_hint}")
                 }));
             }
             match tool_policy::compose(
@@ -1391,6 +1395,15 @@ async fn run_turn(context: &mut TurnContext) {
 
     if status == "completed" && failure.is_some() {
         status = "failed";
+    }
+    if status == "completed"
+        && super::document_delivery::requested(&context.request, &context.capability)
+        && !final_content.is_empty()
+    {
+        if let Err(error) = deliver_requested_document(context, &final_content).await {
+            status = "failed";
+            failure = Some(("document_delivery_failed".to_string(), error, true));
+        }
     }
     if status == "completed"
         && final_content.is_empty()
@@ -1701,6 +1714,57 @@ async fn pause_for_user(context: &mut TurnContext, call: &llm::ToolCall) -> Resu
             _ => {}
         }
     }
+}
+
+async fn deliver_requested_document(
+    context: &mut TurnContext,
+    content: &str,
+) -> Result<(), String> {
+    let note_results = context
+        .events
+        .iter()
+        .filter(|event| {
+            event["type"] == "tool_result" && event["metadata"]["tool_name"] == "write_note"
+        })
+        .collect::<Vec<_>>();
+    if note_results
+        .iter()
+        .any(|event| event["metadata"]["call_state"] == "complete")
+    {
+        return Ok(());
+    }
+    if !note_results.is_empty() {
+        return Err("文档保存失败，请查看工具错误后重试；聊天正文仍然保留。".to_string());
+    }
+    let call = llm::ToolCall {
+        id: format!("document-delivery-{}", context.turn_id),
+        name: "write_note".to_string(),
+        arguments: json!({
+            "title": super::document_delivery::title(content),
+            "content": content
+        }),
+    };
+    let outcome = tools::execute_with_runtime(
+        &call.name,
+        &call.arguments,
+        tools::ToolRuntime {
+            state: &context.state,
+            request: Some(&context.request),
+            llm: Some(&context.llm),
+            cancel: Some(&context.cancel),
+            turn_id: &context.turn_id,
+            session_id: &context.session_id,
+            language: &context.language,
+            source_index: Some(&context.source_index),
+        },
+    )
+    .await;
+    emit_tool_events(context, &call, &outcome)?;
+    if !outcome.success {
+        return Err(outcome.content);
+    }
+    collect_tool_attachments(context, &outcome.metadata);
+    Ok(())
 }
 
 fn emit_tool_events(
@@ -3490,6 +3554,14 @@ mod tests {
     #[tokio::test]
     async fn 工具达到上限后关闭工具并生成最终答案() {
         let (state, _temporary) = test_state();
+        let max_tool_rounds = 2;
+        state
+            .database
+            .set_setting(
+                "capability_settings",
+                &json!({"chat": {"max_rounds": max_tool_rounds}}),
+            )
+            .unwrap();
         let requests = std::sync::Arc::new(Mutex::new(Vec::<Value>::new()));
         let captured = requests.clone();
         let app = Router::new().route(
@@ -3528,16 +3600,16 @@ mod tests {
         assert_eq!(turn["status"], "completed");
         assert_eq!(turn["error_code"], "");
         let requests = requests.lock();
-        assert_eq!(requests.len(), MAX_TOOL_ROUNDS + 1);
-        assert!(requests[MAX_TOOL_ROUNDS].get("tools").is_none());
+        assert_eq!(requests.len(), max_tool_rounds + 1);
+        assert!(requests[max_tool_rounds].get("tools").is_none());
         assert_eq!(
-            requests[MAX_TOOL_ROUNDS]["messages"]
+            requests[max_tool_rounds]["messages"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .filter(|message| message["role"] == "tool")
                 .count(),
-            MAX_TOOL_ROUNDS
+            max_tool_rounds
         );
         let events = state.database.get_turn_events(turn_id, 0).unwrap();
         assert!(!events.iter().any(|event| event["type"] == "error"));
@@ -3549,6 +3621,105 @@ mod tests {
             messages.last().unwrap()["content"],
             "根据工具结果整理的最终答案"
         );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn 超过七轮后仍能继续并将模型正文交付为真实文档() {
+        let (state, _temporary) = test_state();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(|axum::Json(body): axum::Json<Value>| async move {
+                let count = body["messages"].as_array().unwrap().iter()
+                    .filter(|message| message["role"] == "tool").count();
+                let delta = if count < 10 {
+                    assert!(body.get("tools").is_some(), "第十轮前不应禁止工具");
+                    json!({"tool_calls": [{
+                        "index": 0, "id": format!("call-{count}"),
+                        "function": {"name": "load_tools", "arguments": "{\"names\":[]}"}
+                    }]})
+                } else {
+                    json!({"content": "# 精密测量复习资料\n\n一、绪论\n来源已核实。[p.1]\n\n二、测量系统\n已核实第二章。"})
+                };
+                ([(header::CONTENT_TYPE, "text/event-stream")],
+                 format!("data: {}\n\ndata: [DONE]\n\n", json!({"choices":[{"delta":delta}]})))
+            }),
+        );
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        configure_mock_model(&state, format!("http://{address}/v1"));
+        let request = json!({
+            "content": "严格按照这个提纲来补全内容，形成一个复习资料",
+            "capability": "immersive_reading", "client_submission_id": "document-submission"
+        });
+        let receipt = start_turn(state.clone(), request.clone()).await.unwrap();
+        let turn_id = receipt["turn_id"].as_str().unwrap();
+        assert_eq!(
+            wait_for_finished_turn(&state, turn_id).await["status"],
+            "completed"
+        );
+        let documents = state.database.list_resources("document").unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0]["title"], "精密测量复习资料");
+        assert!(documents[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("二、测量系统"));
+        let events = state.database.get_turn_events(turn_id, 0).unwrap();
+        assert_eq!(
+            events.iter().filter(|e| e["type"] == "tool_result").count(),
+            11
+        );
+        let saved = events
+            .iter()
+            .find(|e| e["type"] == "workspace_items")
+            .unwrap();
+        assert_eq!(saved["metadata"]["items"][0]["id"], documents[0]["id"]);
+        let messages = state
+            .database
+            .get_messages(receipt["session_id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            messages.last().unwrap()["attachments"][0]["id"],
+            documents[0]["id"]
+        );
+        let replay = start_turn(state.clone(), request).await.unwrap();
+        assert_eq!(replay["turn_id"], receipt["turn_id"]);
+        assert_eq!(state.database.list_resources("document").unwrap().len(), 1);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn 文档保存失败明确失败且不虚报成功() {
+        let (state, _temporary) = test_state();
+        let (url, task) = start_mock_openai().await;
+        configure_mock_model(&state, url);
+        let db = rusqlite::Connection::open(&state.paths.database).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_document BEFORE INSERT ON resources WHEN NEW.domain='document' BEGIN SELECT RAISE(ABORT,'测试注入：文档不可写'); END;").unwrap();
+        let receipt = start_turn(
+            state.clone(),
+            json!({
+                "content": "请写一个总结文档", "capability": "chat"
+            }),
+        )
+        .await
+        .unwrap();
+        let turn = wait_for_finished_turn(&state, receipt["turn_id"].as_str().unwrap()).await;
+        assert_eq!(turn["status"], "failed");
+        assert_eq!(turn["error_code"], "document_delivery_failed");
+        assert!(state
+            .database
+            .list_resources("document")
+            .unwrap()
+            .is_empty());
+        let events = state
+            .database
+            .get_turn_events(receipt["turn_id"].as_str().unwrap(), 0)
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|e| e["type"] == "workspace_items" || e["type"] == "result"));
         task.abort();
     }
 

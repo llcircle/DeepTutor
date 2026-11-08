@@ -1770,7 +1770,7 @@
   "Explore max iterations": "探索阶段最大迭代次数",
   "Exploring (max tokens)": "探索（最大 Token 数）",
   "Exploring agent loop followed by a respond stage. Stage budgets cap max_tokens per LLM round.": "探索智能体循环，随后进入响应阶段。每个阶段的预算限制每轮 LLM 调用的 max_tokens。",
-  "Hard cap on exploring-loop LLM rounds per turn. A round without tool calls ends the loop early.": "限制每轮对话中探索循环的 LLM 轮数。某一轮未调用工具时会提前结束循环。",
+  "Hard cap on exploring-loop LLM rounds per turn. A round without tool calls ends the loop early.": "限制每轮对话可使用工具的轮数，最终总结另有一次请求。模型完成任务时会提前结束；跨章节整理建议保留足够轮次。",
   "How far back paper search will scan.": "论文搜索回溯多少年。",
   "How many times the planner may revise the plan within one turn.": "单轮内规划器可以修订计划的次数。",
   "Manim animation / image generation pipeline.": "Manim 动画 / 图像生成流水线。",

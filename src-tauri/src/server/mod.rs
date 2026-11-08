@@ -5,6 +5,8 @@ mod calendar;
 mod catalog;
 mod cron;
 mod deferred;
+mod document_delivery;
+mod document_markdown;
 mod document_settings;
 mod documents;
 mod documents_api;

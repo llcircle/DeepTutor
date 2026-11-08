@@ -29,10 +29,11 @@ playbook: |
      document. Search snippets are windowed and may cut mid-sentence — quoting
      one produces a citation that does not match the page. If you did not read
      it, you do not know it.
-  3. Call `reader_goto` whenever you reference a specific passage, passing the
-     verbatim quote. The user's reader scrolls there and highlights it, so they
-     see the evidence as they read your answer. Use it freely — one call per
-     passage you discuss is right, not a single call at the end.
+  3. Call `reader_goto` with a verbatim quote when the user asks to navigate or
+     discuss a passage in detail. For cross-chapter documents, search by outline,
+     read relevant page ranges in batches and preserve page citations. Avoid
+     navigating for every citation or rereading verified text; reserve a step
+     to save the complete document.
   4. Cite as [p.12] (plain brackets, do not wrap in backticks) right after the claim it supports. Always that exact form,
      whatever the document's units are called (write [p.12] even for a chapter
      or a slide). Use [p.12,17] for several and [p.12-14] for a range. The

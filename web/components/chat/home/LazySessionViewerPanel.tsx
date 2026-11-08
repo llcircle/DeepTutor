@@ -13,6 +13,7 @@ import type {
   SessionViewerPanelHandle,
   SessionViewerPanelProps,
 } from "./SessionViewerPanel";
+import { generatedDocumentId } from "@/lib/generated-document";
 
 export type { SessionViewerPanelHandle } from "./SessionViewerPanel";
 
@@ -38,7 +39,12 @@ const LazySessionViewerPanel = forwardRef<
   // Once opened, stay mounted. Unmounting on close cut the slide-out short
   // (the panel vanished while the chat column was still easing back) and
   // threw away the open tabs.
-  if (props.open && !loadRequested) setLoadRequested(true);
+  const hasGeneratedDocument = props.activity.artifacts?.some(
+    ({ attachment }) => generatedDocumentId(attachment) !== null,
+  );
+  if ((props.open || hasGeneratedDocument) && !loadRequested) {
+    setLoadRequested(true);
+  }
 
   // Warm the chunk once the page goes idle, so the first open slides in with
   // the chat column's squeeze instead of trailing it by a network fetch.

@@ -166,6 +166,28 @@ test("large sequence gaps request reconciliation instead of emitting", () => {
   });
 });
 
+test("文档产物事件可以实时消费及断线重放，不阻塞后续完成事件", () => {
+  const { client, events, diagnostics, scheduler, sockets } = harness();
+  client.connect();
+  sockets[0].open();
+  sockets[0].message(stream(1, "tool_result"));
+  sockets[0].message({
+    ...stream(2, "workspace_items"),
+    metadata: { items: [{ id: "document-1", url: "/api/documents/document-1/markdown" }] },
+  });
+  assert.equal(client.cursor.afterSeq, 2);
+  sockets[0].close();
+  scheduler.runNext();
+  sockets[1].open();
+  assert.equal(sockets[1].sent[0].seq, 2);
+  sockets[1].message(stream(2, "workspace_items"));
+  sockets[1].message(stream(4, "done"));
+  sockets[1].message(stream(3, "result"));
+  assert.deepEqual(events.map((event) => event.seq), [1, 2, 3, 4]);
+  assert.equal(events.at(-1)?.type, "done");
+  assert.equal(client.cursor.afterSeq, 4);
+  assert.deepEqual(diagnostics, []);
+});
 test("a bounded missing frame triggers durable replay and releases buffered done", () => {
   const { client, events, reconciliations, scheduler, sockets } = harness();
   client.connect();

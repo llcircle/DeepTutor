@@ -1770,7 +1770,7 @@
   "Explore max iterations": "Explore max iterations",
   "Exploring (max tokens)": "Exploring (max tokens)",
   "Exploring agent loop followed by a respond stage. Stage budgets cap max_tokens per LLM round.": "Exploring agent loop followed by a respond stage. Stage budgets cap max_tokens per LLM round.",
-  "Hard cap on exploring-loop LLM rounds per turn. A round without tool calls ends the loop early.": "Hard cap on exploring-loop LLM rounds per turn. A round without tool calls ends the loop early.",
+  "Hard cap on exploring-loop LLM rounds per turn. A round without tool calls ends the loop early.": "Maximum tool-enabled rounds per turn, plus a separate final response request. The loop ends early when the task is complete. Allow enough rounds for multi-document work.",
   "How far back paper search will scan.": "How far back paper search will scan.",
   "How many times the planner may revise the plan within one turn.": "How many times the planner may revise the plan within one turn.",
   "Manim animation / image generation pipeline.": "Manim animation / image generation pipeline.",

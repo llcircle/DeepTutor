@@ -9,7 +9,7 @@ pub fn defaults(key: &str) -> Value {
             "max_chars_per_doc": 200_000, "max_chars_total": 150_000
         }),
         "capability_settings" => json!({
-            "chat": {"temperature": 0.2, "max_rounds": 8,
+            "chat": {"temperature": 0.2, "max_rounds": 32,
                 "stage_budgets": {"exploring": 1600, "responding": 8000}},
             "solve": {"temperature": 0.3, "max_tokens": 8192, "max_rounds": 12, "max_replans": 2},
             "research": {"temperature": 0.5, "max_tokens": 16834, "researching": {

@@ -856,7 +856,7 @@ fn workspace_present_definition() -> Value {
 fn write_note_definition() -> Value {
     tool(
         "write_note",
-        "新建一篇作者笔记页面并保存到便携数据库。已有页面应通过写作界面修改。",
+        "创建并保存可编辑的文档、复习资料、总结或作者笔记。用户要求形成文档或整理成复习资料时，完成来源核实后必须调用本工具，不能只在聊天中输出正文。已有页面应通过写作界面修改。",
         json!({
             "type": "object",
             "properties": {
@@ -3918,7 +3918,18 @@ fn write_note(arguments: &Value, runtime: &ToolRuntime<'_>) -> ToolOutcome {
     if content.chars().count() > 200_000 {
         return ToolOutcome::failure("笔记正文不能超过 200000 个字符。");
     }
-    let id = uuid::Uuid::new_v4().simple().to_string();
+    let id = if runtime.turn_id.is_empty() {
+        uuid::Uuid::new_v4().simple().to_string()
+    } else {
+        let identity =
+            serde_json::to_vec(&json!([runtime.turn_id, title, content])).unwrap_or_default();
+        format!("{:x}", Sha256::digest(identity))[..32].to_string()
+    };
+    match runtime.state.database.get_resource("document", &id) {
+        Ok(Some(document)) => return saved_note_outcome(&document),
+        Ok(None) => {}
+        Err(error) => return ToolOutcome::failure(format!("无法读取笔记：{error}")),
+    }
     let now = crate::storage::now();
     let document = json!({
         "id": id,
@@ -3927,6 +3938,8 @@ fn write_note(arguments: &Value, runtime: &ToolRuntime<'_>) -> ToolOutcome {
         "content": content,
         "blocks": null,
         "revision": 1,
+        "source_session_id": runtime.session_id,
+        "source_turn_id": runtime.turn_id,
         "parent_id": null,
         "icon": "",
         "cover": "",
@@ -3941,6 +3954,20 @@ fn write_note(arguments: &Value, runtime: &ToolRuntime<'_>) -> ToolOutcome {
     {
         return ToolOutcome::failure(format!("无法保存笔记：{error}"));
     }
+    saved_note_outcome(&document)
+}
+
+fn saved_note_outcome(document: &Value) -> ToolOutcome {
+    let id = document["id"].as_str().unwrap_or_default();
+    let artifact = json!({
+        "id": id,
+        "type": "document",
+        "title": document["title"],
+        "filename": format!("{}.md", document["title"].as_str().unwrap_or("文档")),
+        "url": format!("/api/documents/{id}/markdown"),
+        "mime_type": "text/markdown",
+        "generated": true
+    });
     ToolOutcome::success(
         serde_json::to_string_pretty(&json!({
             "id": id,
@@ -3948,7 +3975,7 @@ fn write_note(arguments: &Value, runtime: &ToolRuntime<'_>) -> ToolOutcome {
             "url": format!("/co-writer/{id}")
         }))
         .unwrap_or_default(),
-        json!({"kind": "note", "page": document}),
+        json!({"kind": "note", "page": document, "artifacts": [artifact]}),
     )
 }
 

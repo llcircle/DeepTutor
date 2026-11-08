@@ -24,6 +24,7 @@ const STREAM_EVENT_TYPES = new Set<StreamEventType>([
   "content",
   "tool_call",
   "tool_result",
+  "workspace_items",
   "progress",
   "sources",
   "result",

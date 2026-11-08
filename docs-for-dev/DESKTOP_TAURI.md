@@ -291,6 +291,31 @@ CLI。状态码 `external_parser_required` 表示需要用户配置外部解析�
 不表示已经执行向量索引。新增阅读向量请求的用量目前不计入聊天 token 汇总，
 实际计费应以用户配置的向量服务记录为准。
 
+## 阅读工具预算与文档交付
+
+- `capability_settings.chat.max_rounds` 表示可调用工具的轮数，默认 32；
+  沉浸式阅读沿用对话设置。用户显式设置仍然生效，范围为 1–50。
+  工具预算耗尽后另有一次不带工具的最终请求，不占用工具轮次。
+- 跨章节整理按提纲检索、批量读取原文并保留页码引用；只有跳转或逐段讲解
+  才需要 `reader_goto`，不为每条引用反复移动视口。
+- `write_note` 创建真实作者文档，并返回可下载的 Markdown 附件。阅读器和聊天
+  查看器按文档 ID 打开现有编辑器，支持自动保存和 Markdown、Word 导出。
+- `workspace_items` 纳入共享回合事件契约，实时文档附件与持久化附件按 URL
+  合并去重。首次生成文档会加载尚未打开的阅读侧栏；重放产物事件不会阻塞
+  后续 `done`，也不会让对话停留在探索状态。
+- 对话、沉浸式阅读和研究中的明确文档创作请求，若模型仅返回正文，回合服务
+  负责将正文保存后交付；代码块、块引用、一般功能咨询和否定要求不触发此兜底。
+  保存失败返回 `document_delivery_failed`，保留聊天正文，不产生虚假成功附件。
+- 同一回合的同标题、同正文写入使用稳定 ID，重试不会覆盖已经编辑的文档。
+  文档持久化在便携目录的 `data/deeptutor.sqlite3`，可由
+  `GET /api/documents/{doc_id}/markdown` 下载当前正文。
+- 块编辑保存时在 Rust 中同步生成 Markdown 正文，保留富文本、标题、嵌套列表、
+  表格、公式和学习卡片；下载与 Word 导出使用最新编辑内容。旧块页面读取时
+  也按块树投影，不会沿用过期正文，纯 Markdown 页面保持原文。
+- `node scripts/verify_reading_documents.mjs` 对最终 EXE 验证四份真实 PDF 的
+  13 轮读取、文档落库、编辑保存、Word 导出、实时及首次侧栏交付、失败注入及重启重放。
+  仅使用隔离便携目录和本地模拟模型。
+
 ## 开发验证
 
 ```powershell
@@ -325,6 +350,11 @@ Rust 测试目标不链接 GUI，避免 Windows 测试资源清单问题。构�
 每次重新编译并交付 EXE，都必须通过 `build_portable.ps1` 同步更新便携 ZIP
 及 `.sha256`；前端未改动时可以使用 `-SkipFrontend`，交付时不得使用
 `-SkipZip`。不能只替换便携目录中的 EXE 而保留旧 ZIP。
+
+仅修复外部静态前端、且 Rust 与嵌入资源未变化时，可传
+`-ReuseBinarySha256 <已验收发行EXE的SHA256>` 复用当前发行目录的 release
+二进制。脚本核对哈希和构建输入修改时间，仍执行前端构建、ZIP、校验和及
+逐文件审计；不能与 `-SkipZip` 合用。Rust 或嵌入提示词改变后必须完整编译。
 
 `verify_portable.ps1` 解析 PE 头和导入表，要求 `DeepTutor.exe` 显式导入的
 `WebView2Loader.dll` 与 EXE、manifest 架构一致，并确认其余原生依赖由系统或

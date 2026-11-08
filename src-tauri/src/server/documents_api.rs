@@ -1,3 +1,4 @@
+use super::document_markdown::blocks_to_markdown;
 use super::error::{ApiError, ApiResult};
 use super::llm;
 use super::ScopedState;
@@ -67,6 +68,7 @@ pub fn router() -> Router<AppState> {
                 .put(update_document)
                 .delete(delete_document),
         )
+        .route("/documents/{doc_id}/markdown", get(download_markdown))
         .route(
             "/documents/{doc_id}/suggestions",
             get(list_suggestions).post(create_suggestion),
@@ -121,7 +123,7 @@ async fn create_document(
         .chars()
         .take(160)
         .collect::<String>();
-    let content = body
+    let mut content = body
         .get("content")
         .and_then(Value::as_str)
         .unwrap_or("")
@@ -132,6 +134,10 @@ async fn create_document(
         .filter(|value| value.is_array())
         .cloned()
         .unwrap_or(Value::Null);
+    if let Some(blocks) = blocks.as_array() {
+        content = blocks_to_markdown(blocks);
+        ensure_document_size(&content)?;
+    }
     let document = json!({
         "id": id,
         "doc_id": id,
@@ -150,6 +156,25 @@ async fn create_document(
         .database
         .put_resource(DOCUMENT_DOMAIN, &id, &document)?;
     Ok(Json(saved))
+}
+
+async fn download_markdown(
+    ScopedState(state): ScopedState,
+    Path(doc_id): Path<String>,
+) -> ApiResult<Response> {
+    let document = load_document(&state, &doc_id)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"document.md\"",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        document["content"].as_str().unwrap_or("").to_string(),
+    )
+        .into_response())
 }
 
 async fn get_document(
@@ -174,6 +199,11 @@ async fn update_document(
             )));
         }
     }
+    if current["blocks"].is_array() && body["content"].is_string() && !body["blocks"].is_array() {
+        return Err(ApiError::conflict(
+            "请通过块编辑器修改此文档，避免覆盖现有结构。",
+        ));
+    }
     let mut next = current;
     for key in [
         "title",
@@ -187,6 +217,9 @@ async fn update_document(
         if let Some(value) = body.get(key) {
             next[key] = value.clone();
         }
+    }
+    if let Some(blocks) = body.get("blocks").and_then(Value::as_array) {
+        next["content"] = Value::String(blocks_to_markdown(blocks));
     }
     if let Some(content) = next.get("content").and_then(Value::as_str) {
         ensure_document_size(content)?;
@@ -1073,10 +1106,15 @@ fn record_operation(state: &AppState, action: &str, payload: Value) -> ApiResult
 
 fn load_document(state: &AppState, doc_id: &str) -> ApiResult<Value> {
     validate_doc_id(doc_id)?;
-    state
+    let mut document = state
         .database
         .get_resource(DOCUMENT_DOMAIN, doc_id)?
-        .ok_or_else(|| ApiError::not_found("笔记不存在"))
+        .ok_or_else(|| ApiError::not_found("笔记不存在"))?;
+    // 兼容过去只更新块树的页面，下载和再次打开均使用最新正文。
+    if let Some(blocks) = document["blocks"].as_array() {
+        document["content"] = Value::String(blocks_to_markdown(blocks));
+    }
+    Ok(document)
 }
 
 fn validate_doc_id(doc_id: &str) -> ApiResult<()> {
@@ -1122,24 +1160,6 @@ fn ensure_document_size(content: &str) -> ApiResult<()> {
     } else {
         Ok(())
     }
-}
-
-fn blocks_to_markdown(blocks: &[Value]) -> String {
-    blocks
-        .iter()
-        .filter_map(|block| {
-            if let Some(content) = block.get("content").and_then(Value::as_str) {
-                Some(content.to_string())
-            } else {
-                block
-                    .pointer("/props/markdown")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            }
-        })
-        .filter(|content| !content.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 fn safe_download_filename(title: &str) -> String {
@@ -1264,6 +1284,113 @@ fn xml_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn document_test_state() -> (AppState, tempfile::TempDir) {
+        let temporary = tempfile::tempdir().expect("创建文档测试目录");
+        let root = temporary.path().to_path_buf();
+        let paths = crate::portable::PortablePaths {
+            home: root.join("home"),
+            data: root.join("data"),
+            cache: root.join("cache"),
+            temp: root.join("temp"),
+            logs: root.join("logs"),
+            webview: root.join("cache/webview2"),
+            uploads: root.join("data/uploads"),
+            outputs: root.join("data/outputs"),
+            database: root.join("data/deeptutor.sqlite3"),
+            root,
+        };
+        let database = crate::storage::Database::new(&paths.database);
+        database.initialize().expect("初始化文档测试数据库");
+        (
+            AppState::new(database, paths).expect("创建文档测试状态"),
+            temporary,
+        )
+    }
+
+    #[tokio::test]
+    async fn 块编辑同步持久化正文与下载并保留版本保护() {
+        let (state, _temporary) = document_test_state();
+        let Json(created) = create_document(
+            ScopedState(state.clone()),
+            Json(json!({"title":"总结","content":"# 初稿"})),
+        )
+        .await
+        .unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        let Json(saved) = update_document(
+            ScopedState(state.clone()), Path(id.clone()),
+            Json(json!({"expected_revision":1,"blocks":[
+                {"id":"heading","type":"heading","props":{"level":2},"content":[{"type":"text","text":"误差理论"}]},
+                {"id":"body","type":"paragraph","content":[{"type":"text","text":"最新编辑"}]}
+            ]})),
+        ).await.unwrap();
+        assert_eq!(saved["revision"], 2);
+        assert_eq!(saved["content"], "## 误差理论\n\n最新编辑");
+        assert_eq!(
+            state
+                .database
+                .get_resource(DOCUMENT_DOMAIN, &id)
+                .unwrap()
+                .unwrap()["content"],
+            saved["content"]
+        );
+        let response = download_markdown(ScopedState(state.clone()), Path(id.clone()))
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            saved["content"].as_str().unwrap()
+        );
+        assert!(update_document(
+            ScopedState(state.clone()),
+            Path(id.clone()),
+            Json(json!({"expected_revision":1,"blocks":[]})),
+        )
+        .await
+        .is_err());
+        assert!(update_document(
+            ScopedState(state.clone()),
+            Path(id.clone()),
+            Json(json!({"expected_revision":2,"content":"不应覆盖块正文"})),
+        )
+        .await
+        .is_err());
+        let Json(empty) = update_document(
+            ScopedState(state.clone()),
+            Path(id.clone()),
+            Json(json!({"expected_revision":2,"blocks":[]})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(empty["content"], "");
+        assert_eq!(load_document(&state, &id).unwrap()["content"], "");
+    }
+
+    #[test]
+    fn 旧块文档读取最新投影且不写回数据库() {
+        let (state, _temporary) = document_test_state();
+        state.database.put_resource(DOCUMENT_DOMAIN, "legacy-doc", &json!({
+            "id":"legacy-doc","content":"旧正文","blocks":[
+                {"id":"block","type":"paragraph","content":[{"type":"text","text":"已保存的块编辑"}]}
+            ]
+        })).unwrap();
+        assert_eq!(
+            load_document(&state, "legacy-doc").unwrap()["content"],
+            "已保存的块编辑"
+        );
+        assert_eq!(
+            state
+                .database
+                .get_resource(DOCUMENT_DOMAIN, "legacy-doc")
+                .unwrap()
+                .unwrap()["content"],
+            "旧正文"
+        );
+    }
 
     #[test]
     fn 块内容会转换为_markdown() {

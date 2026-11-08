@@ -14,6 +14,7 @@ import type {
   MessageRequestSnapshot,
 } from "@/features/chat/ChatStateAdapter";
 import type { StreamEvent } from "@/features/chat/model/protocol";
+import { mergeGeneratedFiles } from "@/lib/generated-files";
 
 /** Artifact URLs are `/files/outputs/<path under the data root>`. */
 const OUTPUTS_URL_PREFIX = "/files/outputs/";
@@ -100,12 +101,12 @@ export function buildSessionActivity(
     });
 
     msg.attachments?.forEach((a) => {
-      // `generated` marks files the assistant produced this turn; everything
-      // else is something the user attached.
-      (a.generated ? artifacts : attachments).push({
-        messageIndex: idx,
-        attachment: a,
-      });
+      if (!a.generated && a.origin !== "workspace") {
+        attachments.push({ messageIndex: idx, attachment: a });
+      }
+    });
+    mergeGeneratedFiles(msg.attachments ?? [], msg.events).forEach((a) => {
+      artifacts.push({ messageIndex: idx, attachment: a });
     });
 
     const snap: MessageRequestSnapshot | undefined = msg.requestSnapshot;

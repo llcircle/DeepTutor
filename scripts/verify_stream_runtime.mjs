@@ -46,7 +46,7 @@ const mock = createServer(async (request, response) => {
         response.end(delta({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`,
           function: { name: "load_tools", arguments: '{"names":[]}' } }] }) + "data: [DONE]\n\n");
       } else {
-        assert.equal(body.messages.filter(message => message.role === "tool").length, 7);
+        assert.equal(body.messages.filter(message => message.role === "tool").length, 32);
         response.end(delta({ content: "工具上限后的最终回答" }) + "data: [DONE]\n\n");
       }
     } else if (String(mode).startsWith("并发长流")) {
@@ -199,11 +199,11 @@ try {
   const toolTurn = await chat("工具上限");
   assert.equal(assistantText(toolTurn), "工具上限后的最终回答");
   const toolRequests = records.filter(record => record.mode === "工具上限");
-  assert.equal(toolRequests.length, 8);
+  assert.equal(toolRequests.length, 33);
   assert.equal(toolRequests.at(-1).tools, false);
-  checks.push("默认 7 轮工具调用后发送一次不带工具的最终回答请求，正文持久化成功");
+  checks.push("默认 32 轮工具调用后额外发送一次不带工具的最终回答请求，正文持久化成功");
   await chat("工具违约", "tool_round_limit");
-  assert.equal(records.filter(record => record.mode === "工具违约").length, 8);
+  assert.equal(records.filter(record => record.mode === "工具违约").length, 33);
   checks.push("达到上限后仍返回工具调用时明确失败，不继续执行或误报空响应");
   for (const [mode, expected] of [["完整JSON", "完整中文答案"], ["数组与末帧", "中文末帧答案"]]) {
     const turn = await chat(mode);
