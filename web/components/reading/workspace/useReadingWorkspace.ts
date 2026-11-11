@@ -74,6 +74,7 @@ export function useReadingWorkspace(
   const [organizedNotes, setOrganizedNotes] =
     useState<OrganizedReadingNotes | null>(null);
   const sessionBootRef = useRef("");
+  const sessionLoadRef = useRef<AbortController | null>(null);
   const [manualSessionMaterial, setManualSessionMaterial] = useState<{
     workspaceId: string;
     sessionId: string;
@@ -203,6 +204,7 @@ export function useReadingWorkspace(
     const bootKey = `${workspaceId}:${sessionIdParam ?? "new"}`;
     if (sessionBootRef.current === bootKey) return;
     sessionBootRef.current = bootKey;
+    sessionLoadRef.current?.abort();
 
     // The URL catching up with the session the first turn just created is not
     // a request to open a different conversation — the transcript on screen
@@ -210,6 +212,8 @@ export function useReadingWorkspace(
     // answer for whatever partial row the backend has written so far.
     if (sessionIdParam && sessionIdParam === state.sessionId) return;
 
+    const controller = new AbortController();
+    sessionLoadRef.current = controller;
     void (async () => {
       try {
         // The URL is the truth about which conversation is open, the same
@@ -224,12 +228,14 @@ export function useReadingWorkspace(
         // turn runs (see `turn_runtime`), so opening a collection and walking
         // away no longer litters it with empty conversations.
         if (sessionIdParam) {
-          await loadSession(sessionIdParam);
+          await loadSession(sessionIdParam, { signal: controller.signal });
+          if (controller.signal.aborted) return;
           configureSession(sessionConfiguration, sessionIdParam);
         } else {
           newSession({ ...sessionConfiguration, capability: null });
         }
       } catch (caught) {
+        if (controller.signal.aborted) return;
         setError(
           caught instanceof Error
             ? caught.message
@@ -249,6 +255,11 @@ export function useReadingWorkspace(
     workspace,
     workspaceId,
   ]);
+
+  useEffect(() => () => {
+    sessionLoadRef.current?.abort();
+    sessionBootRef.current = "";
+  }, []);
 
   useEffect(() => {
     if (!material || material.unit !== "segment") return;

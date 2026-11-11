@@ -420,6 +420,8 @@ interface SessionSnapshot {
   language?: string;
   replyLanguageOverride?: string | null;
   selectedBranches?: Record<string, number>;
+  /** 请求发出时的消息引用，防止迟到快照覆盖期间收到的流事件或编辑。 */
+  messagesAtRequest?: MessageItem[];
 }
 
 type Action =
@@ -1310,6 +1312,16 @@ function reduce(state: ProviderState, action: Action): ProviderState {
     }
     case "LOAD_SESSION":
     case "REVALIDATE_SESSION": {
+      const local = state.sessions[action.key];
+      if (local && (
+        local.isStreaming || local.status === "running" ||
+        hasPendingAskUserInMessages(local.messages, local.activeTurnId) ||
+        ("messagesAtRequest" in action && local.messages !== action.messagesAtRequest)
+      )) {
+        return action.type === "LOAD_SESSION" && state.selectedKey !== action.key
+          ? { ...state, selectedKey: action.key }
+          : state;
+      }
       if (action.type === "REVALIDATE_SESSION") {
         // Second line of defence: ``loadSession`` already drops a revalidate
         // whose session went live, but the check belongs here too so no
@@ -2432,10 +2444,14 @@ export function ChatStateAdapterProvider({
         key,
         client: new UnifiedTurnClient(
           (event) => {
-            if (generation === runtimeGeneration.current) handleRunnerEvent(record.key, event);
+            if (generation !== runtimeGeneration.current) return;
+            // 旧连接仅继续接收标题更新；迟到的流事件不能写进下一轮回答。
+            if (runnersRef.current.get(record.key) !== record && event.type !== "session_meta") return;
+            handleRunnerEvent(record.key, event);
           },
           () => {
-            if (generation !== runtimeGeneration.current) return;
+            if (generation !== runtimeGeneration.current ||
+                runnersRef.current.get(record.key) !== record) return;
             const session = stateRef.current.sessions[record.key];
             if (session?.isStreaming) {
               if (
@@ -2665,12 +2681,28 @@ export function ChatStateAdapterProvider({
       options?: { signal?: AbortSignal; revalidate?: boolean },
     ) => {
       const generation = runtimeGeneration.current;
+      const messagesAtRequest = stateRef.current.sessions[sessionId]?.messages;
       const session = await getSession(sessionId, options?.signal);
       if (options?.signal?.aborted || generation !== runtimeGeneration.current) return;
       const key = session.session_id || session.id;
       const activeTurn = Array.isArray(session.active_turns)
         ? session.active_turns[0]
         : undefined;
+      const local = stateRef.current.sessions[key];
+      if (local && (
+        local.isStreaming || local.status === "running" ||
+        hasPendingAskUserInMessages(local.messages, local.activeTurnId) ||
+        local.messages !== messagesAtRequest
+      )) {
+        // 本地正文与传输游标必须一起保留，否则同一连接无法重放被快照清空的部分。
+        if (!options?.revalidate) dispatch({ type: "SELECT_SESSION", key });
+        if (local.activeTurnId && (local.isStreaming ||
+            hasPendingAskUserInMessages(local.messages, local.activeTurnId))) {
+          // 连接仍在接收时无需重复订阅；断线由传输层按当前游标恢复。
+          ensureRunner(key);
+        }
+        return local.messages;
+      }
       if (options?.revalidate) {
         // Background refresh of a session already on screen. Drop the whole
         // snapshot — data *and* the re-subscribe below — once a turn is live
@@ -2704,17 +2736,14 @@ export function ChatStateAdapterProvider({
       )
         ? session.preferences.reply_language_override
         : null;
-      // A stored `running` is only believable while it is recent — see
-      // `resolveLoadedRunStatus`. A turn the backend never got to close out
-      // (crash, restart) would otherwise open the conversation into a
-      // permanent "answering" state: Stop instead of Send, with no stream to
-      // stop and no way back except starting a new conversation.
+      // 会话时间通常停在回合开始，不能用它判定长任务已结束。
       const loadedStatus = resolveLoadedRunStatus(
         (session.status as SessionRuntimeStatus | undefined) ||
           (activeTurn ? "running" : "idle"),
         Number(session.updated_at) > 0 ? Number(session.updated_at) * 1000 : 0,
         Date.now(),
         readStoredChatResponseTimeout() * 1000,
+        activeTurn?.status ?? (Array.isArray(session.active_turns) ? null : undefined),
       );
       // Restore every pending submission. A matching client_submission_id on
       // a persisted user row is the only evidence that this particular send
@@ -2765,6 +2794,7 @@ export function ChatStateAdapterProvider({
         sessionId: key,
         title: session.title || "",
         messages: restoredMessages,
+        messagesAtRequest,
         activeTurnId: activeTurn?.turn_id || activeTurn?.id || null,
         status: restoredStatus,
         serverStatus: loadedStatus,
@@ -2818,12 +2848,8 @@ export function ChatStateAdapterProvider({
       });
       const activeTurnId = activeTurn?.turn_id || activeTurn?.id || "";
       if (activeTurnId && loadedStatus === "running") {
-        // Reached on a revalidate too, when the turn is live on the server but
-        // not in this tab (started in another tab, or our socket dropped) —
-        // that is exactly the case that still needs a subscribe. A turn we
-        // just judged stale is not one of them: subscribing would open a
-        // socket for a turn that will never speak again.
-        sendThroughRunner(key, {
+        // 新页面直接排入传输层的持久队列，不因连接尚未建立而耗尽本地发送重试。
+        ensureRunner(key).client.send({
           type: "subscribe_turn",
           turn_id: activeTurnId,
           after_seq: 0,
@@ -2851,7 +2877,7 @@ export function ChatStateAdapterProvider({
       }
       return messages;
     },
-    [ensureRunner, hydrateMessages, sendThroughRunner],
+    [ensureRunner, hydrateMessages],
   );
 
   useLayoutEffect(() => {
@@ -3426,20 +3452,23 @@ export function ChatStateAdapterProvider({
     const session = currentState.sessions[key];
     if (!session) return;
     const turnId = session.activeTurnId;
-    const runner = runnersRef.current.get(key);
-    if (runner) {
-      if (turnId) {
-        try {
-          if (!await runner.client.sendAwaitingAck({ type: "cancel_turn", turn_id: turnId })) {
-            notify(i18n.t("Couldn't reach the server. Please check your connection and retry."), { tone: "error" });
-            return;
-          }
-          if (generation !== runtimeGeneration.current) return;
-        } catch {
+    if (turnId) {
+      const runner = ensureRunner(key);
+      try {
+        if (!await runner.client.sendAwaitingAck({ type: "cancel_turn", turn_id: turnId })) {
           notify(i18n.t("Couldn't reach the server. Please check your connection and retry."), { tone: "error" });
           return;
         }
+        if (generation !== runtimeGeneration.current) return;
+      } catch {
+        notify(i18n.t("Couldn't reach the server. Please check your connection and retry."), { tone: "error" });
+        return;
       }
+      // ACK 只表示接受取消。继续接收 DONE，取得真实消息 ID 后才能安全发送下一轮。
+      return;
+    }
+    const runner = runnersRef.current.get(key);
+    if (runner) {
       runner.client.disconnect();
       runnersRef.current.delete(key);
     }
@@ -3456,7 +3485,7 @@ export function ChatStateAdapterProvider({
         submissionFailed: Boolean(pendingSubmission && !turnId),
       });
     }
-  }, []);
+  }, [ensureRunner]);
 
   const submitUserReply = useCallback(
     async (

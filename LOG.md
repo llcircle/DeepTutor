@@ -285,3 +285,15 @@
 - 统一构建更新 EXE、便携 ZIP 和 SHA-256；原 data/cache/temp/logs/home 保留，ZIP 无用户数据及 Python/Node 运行时。EXE 启动、25 模块、安装目录存储、892 文件逐项哈希验收通过，target 已自动清理。
 - EXE SHA-256：03fa237fc81d5f865e5065a00308f71c72fe9cbef68a9ac63eb7d134c5d0794c；ZIP SHA-256：65a8c72ed8a8c9c5a9d6560e7da1ae15ca0206e84c70e1ecab80b7ef8e76bbc1。代码状态：可用，已完成真实模型和最终发行 EXE 验收；本地提交，不推送。
 - 验收汇总：artifacts/live-ai-followup-delivery-report.json；真实模型文档与截图：artifacts/live-ai-documents-verification/。
+
+## 2026-11-12 00:14:59 +08:00 — 修复生成中切换会话的恢复与卡住问题
+
+- 需求：修复生成中切走再返回后正文消失、等待状态卡住；工作区草稿文件和本地程序执行能力本轮仅形成方案。
+- 根因：历史快照覆盖正在生成的本地消息并清零界面游标，但同一连接游标不能回退；会话更新时间被误当作长任务是否存活的依据；停止生成后未等 DONE 回写真实消息 ID，续问可能写成根分支；旧连接的迟到事件和关闭回调可能影响下一轮。
+- 修改：保留活动流正文与游标，防止迟到加载覆盖新事件；阅读页面取消过期加载；以服务端活动回合为优先恢复依据；冷加载经传输层持久队列订阅；取消 ACK 后等待 DONE 对齐消息 ID；旧 runner 只保留 session_meta 更新，其余事件和关闭不再污染新轮。
+- 新增：web/tests/chat-session-resume.spec.tsx（11 项恢复回归）、scripts/verify_session_resume.mjs（实际发行 EXE、本地受控流和真实模型的隔离验收）、docs-for-dev/WORKSPACE_FILES_EXECUTION_DRAFT.md（仅草稿，不启用新能力）。
+- 验证：类型检查、修改文件 ESLint、架构检查（1067 模块）通过；Node 测试 1327/1327；Vitest 202 文件、1028/1028；实际 EXE 的 8 类受控恢复场景通过；用户当前真实模型生成 3330 字符时切到设置再返回，完整恢复并可继续提问，页面异常为 0。
+- 交付：统一 build_portable.ps1 验证后复用未改动 Rust 的 EXE，重建前端并更新便携目录、ZIP 和 .sha256；verify_portable.ps1 核验 892 个文件、ZIP 逐文件哈希及 EXE 启动/WebView/Rust/25 模块接口/安装目录存储均通过。
+- ZIP：artifacts/DeepTutor-1.7.0-portable-X64.zip；SHA-256：0ad2e6f0516009850018c6f68d4c1e671a841b3d726171a8d4c07159d5bf774b。
+- 空间与数据：本轮无 src-tauri/target；保留正式便携目录内 data/cache/temp/logs/home。临时验收副本的删除两次被自动审核拦截（blocked by policy，未提供更具体原因），副本暂存 artifacts/session-resume-verification/exe-* 和 artifacts/session-resume-smoke；包含隔离测试数据与用于真实验收的模型配置，不进入发行 ZIP 或 Git。
+- 代码可用性：上述自动测试与实际 EXE 验收通过；本地提交，不推送。

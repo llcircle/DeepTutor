@@ -101,7 +101,17 @@ test("a missing timestamp leaves the server's word alone", () => {
   );
 });
 
-test("the loader vets the stored status and skips subscribing to a stale turn", () => {
+test("活动回合优先于会话时间和过期的会话状态", () => {
+  for (const activeStatus of ["queued", "running", "waiting_input"]) {
+    for (const status of ["running", "idle", "completed"]) {
+      assert.equal(resolveLoadedRunStatus(status, 1, NOW, 180_000, activeStatus), "running");
+    }
+  }
+  assert.equal(resolveLoadedRunStatus("running", NOW, NOW, 180_000, null), "idle");
+  assert.equal(resolveLoadedRunStatus("completed", NOW, NOW, 180_000, null), "completed");
+});
+
+test("加载器依据活动回合决定订阅，并保留旧服务的时间兜底", () => {
   const adapter = readFileSync("features/chat/ChatStateAdapter.tsx", "utf8");
 
   // The verdict has to reach both the state and the subscribe: opening a
@@ -109,6 +119,7 @@ test("the loader vets the stored status and skips subscribing to a stale turn", 
   // never arrive. The dispatched status starts from the verdict (it is
   // only overridden when an unsent submission is restored, #1594).
   assert.match(adapter, /const loadedStatus = resolveLoadedRunStatus\(/);
+  assert.match(adapter, /activeTurn\?\.status \?\? \(Array\.isArray\(session\.active_turns\) \? null : undefined\)/);
   assert.match(adapter, /let restoredStatus = loadedStatus;/);
   assert.match(adapter, /status: restoredStatus,/);
   assert.match(
