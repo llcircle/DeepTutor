@@ -297,3 +297,13 @@
 - ZIP：artifacts/DeepTutor-1.7.0-portable-X64.zip；SHA-256：0ad2e6f0516009850018c6f68d4c1e671a841b3d726171a8d4c07159d5bf774b。
 - 空间与数据：本轮无 src-tauri/target；保留正式便携目录内 data/cache/temp/logs/home。临时验收副本的删除两次被自动审核拦截（blocked by policy，未提供更具体原因），副本暂存 artifacts/session-resume-verification/exe-* 和 artifacts/session-resume-smoke；包含隔离测试数据与用于真实验收的模型配置，不进入发行 ZIP 或 Git。
 - 代码可用性：上述自动测试与实际 EXE 验收通过；本地提交，不推送。
+
+## 2026-11-12 11:44:51 +08:00 — 归集临时验收副本并准备推送
+
+- 用户明确授权推送；推送目标为当前开发分支 origin/codex/reading-hybrid-ocr。
+- 上一轮无法删除的 7 份会话恢复 EXE 验收副本及 1 份启动冒烟目录已使用原生 PowerShell Move-Item 集中到 artifacts/manual-delete-20261112，可整体手动删除。
+- 归集前核对实际绝对路径均位于工作区 artifacts、无目录联接、无对应测试进程运行；归集后逐份核对原路径已不存在、文件数和总字节数一致：8 份目录、9684 文件、约 681.9 MiB。
+- 集中目录附 README-可以整体删除.txt 和 manifest.json，记录原路径、现路径和大小；成功验收报告、截图、日志保留在原位置，report.json 同步更新临时副本的新路径。方案草稿、正式便携目录和用户数据均未移动。
+- 再核对便携 ZIP 的 .sha256 一致、正式用户数据库存在；临时副本位于 Git 忽略的 artifacts，不加入本次推送。
+- 网络：Git 直接访问 GitHub 曾连接重置；采用 Windows 已配置的本地系统代理进行本次命令级连接，fetch 已成功，未修改全局 Git 代理配置。
+- 代码可用性：本轮未改产品代码，沿用上一轮实际 EXE、1327 项 Node、1028 项界面单元测试及便携校验通过的结果；记录提交后推送并核对远端分支与本地 HEAD。
